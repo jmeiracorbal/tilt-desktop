@@ -32,6 +32,7 @@ type Runner interface {
 // applications may share a Spec without owning the cluster individually.
 type Spec struct {
 	Name, ManagementID string
+	RegistryPort uint16
 }
 
 func (s Spec) validate() error {
@@ -40,6 +41,9 @@ func (s Spec) validate() error {
 	}
 	if len(s.ManagementID) > 63 || !validName.MatchString(s.ManagementID) {
 		return fmt.Errorf("invalid cluster management ID %q", s.ManagementID)
+	}
+	if s.RegistryPort == 0 {
+		return errors.New("registry host port is required")
 	}
 	return nil
 }
@@ -183,7 +187,7 @@ func (c *Client) Ensure(ctx context.Context, s Spec) error {
 			"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 			"--runtime-label", managedLabel+"="+managedValue+"@all",
 			"--runtime-label", ownerLabel+"="+s.ManagementID+"@all",
-			"--registry-create", s.Name+"-registry:127.0.0.1:0")
+			"--registry-create", fmt.Sprintf("%s-registry:127.0.0.1:%d", s.Name, s.RegistryPort))
 		if err != nil {
 			return fmt.Errorf("create cluster %q: %w", s.Name, err)
 		}
