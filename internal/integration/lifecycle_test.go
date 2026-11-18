@@ -20,7 +20,7 @@ import (
 
 const (
 	integrationTimeout = 12 * time.Minute
-	readyTimeout       = 3 * time.Minute
+	readyTimeout       = 5 * time.Minute
 )
 
 func TestK3dAndTiltLifecycle(t *testing.T) {
@@ -90,6 +90,9 @@ func TestK3dAndTiltLifecycle(t *testing.T) {
 	if err := verifyGlobal(global, marker); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := kubectl(ctx, configPath, name, "get", "configmap", "local-registry-hosting", "-n", "kube-public", "-o", "name"); err != nil {
+		t.Fatalf("k3d did not advertise its registry to Tilt: %v", err)
+	}
 
 	project := filepath.Join(root, "project")
 	if err := os.Mkdir(project, 0700); err != nil {
@@ -102,11 +105,17 @@ metadata:
 data:
   value: verified
 `
-	tiltfile := "allow_k8s_contexts('k3d-" + name + "')\nk8s_yaml('configmap.yaml')\n"
+	tiltfile := "allow_k8s_contexts('k3d-" + name + "')\nk8s_yaml('configmap.yaml')\nk8s_yaml('deployment.yaml')\ndocker_build('tilt-desktop-integration', '.')\n"
 	if err := os.WriteFile(filepath.Join(project, "Tiltfile"), []byte(tiltfile), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(project, "configmap.yaml"), []byte(configMap), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "deployment.yaml"), []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: tilt-desktop-integration\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: tilt-desktop-integration\n  template:\n    metadata:\n      labels:\n        app: tilt-desktop-integration\n    spec:\n      containers:\n        - name: app\n          image: tilt-desktop-integration:dev\n          imagePullPolicy: Always\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "Dockerfile"), []byte("FROM busybox:1.36\nCMD [\"sh\", \"-c\", \"while true; do sleep 3600; done\"]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -154,6 +163,13 @@ data:
 	}); err != nil {
 		t.Fatalf("Tilt did not deploy ConfigMap: %v", err)
 	}
+	t.Log("waiting for Tilt image build, registry push and deployment readiness")
+	if err := await(ctx, readyTimeout, func(ctx context.Context) error {
+		_, err := kubectl(ctx, configPath, name, "rollout", "status", "deployment/tilt-desktop-integration", "--timeout=8s")
+		return err
+	}); err != nil {
+		t.Fatalf("Tilt did not deploy the built image: %v", err)
+	}
 	if _, err := manager.Logs(ctx, config.ProjectID, "", 100); err != nil {
 		t.Fatalf("read Tilt logs: %v", err)
 	}
@@ -170,6 +186,9 @@ data:
 	}
 	if _, err := kubectl(ctx, configPath, name, "get", "configmap", "tilt-desktop-integration"); err != nil {
 		t.Fatalf("deployed resource unexpectedly removed by Tilt Stop: %v", err)
+	}
+	if _, err := kubectl(ctx, configPath, name, "get", "deployment", "tilt-desktop-integration"); err != nil {
+		t.Fatalf("deployed application unexpectedly removed by Tilt Stop: %v", err)
 	}
 	if err := verifyGlobal(global, marker); err != nil {
 		t.Fatal(err)
