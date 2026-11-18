@@ -26,7 +26,7 @@ func NewLocalClient() (*Client, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create config directory: %w", err)
 	}
-	return NewClient(ExecRunner{Binary: "k3d", KubeconfigPath: filepath.Join(dir, "kubeconfig")})
+	return NewClient(ExecRunner{Binary: "k3d", KubeconfigPath: filepath.Join(dir, "kubeconfig")}, DockerInspector{Binary: "docker"})
 }
 
 func (r ExecRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
