@@ -166,7 +166,7 @@ func (c *Client) Ensure(ctx context.Context, s Spec) error {
 			"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 			"--runtime-label", managedLabel+"="+managedValue+"@all",
 			"--runtime-label", ownerLabel+"="+s.ManagementID+"@all",
-			"--registry-create", s.Name+"-registry:127.0.0.1")
+			"--registry-create", s.Name+"-registry:127.0.0.1:0")
 		if err != nil {
 			return fmt.Errorf("create cluster %q: %w", s.Name, err)
 		}
