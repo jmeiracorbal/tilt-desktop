@@ -80,12 +80,12 @@ func client(t *testing.T, owner string, steps ...step) (*Client, *script) {
 }
 
 func TestEnsureCreatesAndVerifies(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "project-123"}
+	s := Spec{Name: "sample", ManagementID: "project-123", RegistryPort: 5111}
 	c, r := client(t, "project-123", listing(), action("cluster", "create", "sample", "--wait", "--timeout", "120s",
 		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 		"--runtime-label", managedLabel+"="+managedValue+"@all",
 		"--runtime-label", ownerLabel+"=project-123@all",
-		"--registry-create", "sample-registry:127.0.0.1:0"), listing(owned("sample", "project-123", true)))
+		"--registry-create", "sample-registry:127.0.0.1:5111"), listing(owned("sample", "project-123", true)))
 	if err := c.Ensure(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestEnsureCreatesAndVerifies(t *testing.T) {
 }
 
 func TestEnsureNoopAndResume(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "project-123"}
+	s := Spec{Name: "sample", ManagementID: "project-123", RegistryPort: 5111}
 	t.Run("running", func(t *testing.T) {
 		c, r := client(t, "project-123", listing(owned("sample", s.ManagementID, true)))
 		if err := c.Ensure(context.Background(), s); err != nil {
@@ -114,7 +114,7 @@ func TestEnsureNoopAndResume(t *testing.T) {
 }
 
 func TestUnmanagedClusterNeverMutated(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
 	for _, op := range []struct {
 		name string
 		fn   func(*Client) error
@@ -136,14 +136,14 @@ func TestUnmanagedClusterNeverMutated(t *testing.T) {
 
 func TestWrongManagementIDNeverMutated(t *testing.T) {
 	c, r := client(t, "someone-else", listing(owned("sample", "someone-else", true)))
-	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine"}); !errors.Is(err, ErrUnmanaged) {
+	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}); !errors.Is(err, ErrUnmanaged) {
 		t.Fatalf("got %v", err)
 	}
 	r.done()
 }
 
 func TestStopAndDelete(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
 	t.Run("stop running", func(t *testing.T) {
 		c, r := client(t, "mine", listing(owned("sample", "mine", true)), action("cluster", "stop", "sample"), listing(owned("sample", "mine", false)))
 		if err := c.Stop(context.Background(), s); err != nil {
@@ -182,7 +182,7 @@ func TestStopAndDelete(t *testing.T) {
 }
 
 func TestKubeconfigRequiresOwnership(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
 	c, r := client(t, "mine", listing(owned("sample", "mine", true)),
 		step{args: []string{"kubeconfig", "get", "sample"}, out: []byte("apiVersion: v1\n")})
 	got, err := c.Kubeconfig(context.Background(), s)
@@ -215,20 +215,20 @@ func TestInvalidJSONAndErrors(t *testing.T) {
 	}
 	r.done()
 	c, r = client(t, "mine", step{args: []string{"cluster", "list", "--output", "json"}, err: errors.New("runtime unavailable")})
-	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine"}); err == nil || !strings.Contains(err.Error(), "runtime unavailable") {
+	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}); err == nil || !strings.Contains(err.Error(), "runtime unavailable") {
 		t.Fatalf("got %v", err)
 	}
 	r.done()
 }
 
 func TestEnsureChecksPostconditions(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
 	c, r := client(t, "", listing(),
 		action("cluster", "create", "sample", "--wait", "--timeout", "120s",
 			"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 			"--runtime-label", managedLabel+"="+managedValue+"@all",
 			"--runtime-label", ownerLabel+"=mine@all",
-			"--registry-create", "sample-registry:127.0.0.1:0"),
+			"--registry-create", "sample-registry:127.0.0.1:5111"),
 		listing(foreign("sample")))
 	if err := c.Ensure(context.Background(), s); !errors.Is(err, ErrUnmanaged) {
 		t.Fatalf("got %v", err)
