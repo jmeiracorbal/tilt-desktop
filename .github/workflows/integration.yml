@@ -1,0 +1,38 @@
+name: Integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  k3d-tilt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install k3d without creating a cluster
+        uses: nolar/setup-k3d-k3s@v1
+        with:
+          k3d-tag: v5.8.3
+          skip-creation: 'true'
+      - name: Install Tilt and kubectl
+        uses: yokawasa/action-setup-kube-tools@v0.14.1
+        with:
+          setup-tools: |
+            tilt
+            kubectl
+          tilt: '0.37.9'
+          kubectl: '1.33.1'
+      - name: Verify Docker runtime
+        run: docker info
+      - name: Run real k3d and Tilt lifecycle
+        run: go test -v -tags=integration -count=1 -timeout=15m ./internal/integration
