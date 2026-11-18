@@ -76,7 +76,7 @@ func TestEnsureCreatesAndVerifies(t *testing.T) {
 		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 		"--runtime-label", managedLabel+"="+managedValue+"@all",
 		"--runtime-label", ownerLabel+"=project-123@all",
-		"--registry-create", "sample-registry:127.0.0.1"), listing(owned("sample", "project-123", true)))
+		"--registry-create", "sample-registry:127.0.0.1:0"), listing(owned("sample", "project-123", true)))
 	if err := c.Ensure(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestEnsureChecksPostconditions(t *testing.T) {
 			"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 			"--runtime-label", managedLabel+"="+managedValue+"@all",
 			"--runtime-label", ownerLabel+"=mine@all",
-			"--registry-create", "sample-registry:127.0.0.1"),
+			"--registry-create", "sample-registry:127.0.0.1:0"),
 		listing(foreign("sample")))
 	if err := c.Ensure(context.Background(), s); !errors.Is(err, ErrUnmanaged) {
 		t.Fatalf("got %v", err)
