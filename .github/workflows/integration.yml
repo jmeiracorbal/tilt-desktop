@@ -24,6 +24,7 @@ jobs:
         with:
           k3d-tag: v5.8.3
           skip-creation: 'true'
+          github-token: ${{ github.token }}
       - name: Install Tilt and kubectl
         uses: yokawasa/action-setup-kube-tools@v0.14.1
         with:
