@@ -90,7 +90,7 @@ metadata:
 data:
   value: verified
 `
-	const tiltfile = "allow_k8s_contexts('k3d-" + name + "')\nk8s_yaml('configmap.yaml')\n"
+	tiltfile := "allow_k8s_contexts('k3d-" + name + "')\nk8s_yaml('configmap.yaml')\n"
 	if err := os.WriteFile(filepath.Join(project, "Tiltfile"), []byte(tiltfile), 0600); err != nil {
 		t.Fatal(err)
 	}
