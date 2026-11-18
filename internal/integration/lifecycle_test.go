@@ -85,6 +85,26 @@ func TestK3dAndTiltLifecycle(t *testing.T) {
 				}
 			}
 		}
+		// Check whether k3d's node-level listing preserves the runtime
+		// labels that are absent from its cluster-level summary.
+		nodeListData, nodeListErr := exec.CommandContext(ctx, "k3d", "node", "list", "--output", "json").Output()
+		if nodeListErr != nil {
+			t.Logf("k3d node list failed: %v", nodeListErr)
+		} else {
+			var nodes []struct {
+				Name string `json:"name"`
+				RuntimeLabels map[string]string `json:"runtimeLabels"`
+			}
+			if decodeErr := json.Unmarshal(nodeListData, &nodes); decodeErr != nil {
+				t.Logf("decode k3d node list: %v", decodeErr)
+			} else {
+				for _, n := range nodes {
+					if strings.HasPrefix(n.Name, "k3d-"+name+"-") {
+						t.Logf("k3d node %q managed-by=%q management-id=%q", n.Name, n.RuntimeLabels["dev.tilt-desktop.managed-by"], n.RuntimeLabels["dev.tilt-desktop.management-id"])
+					}
+				}
+			}
+		}
 		// Inspect only our two ownership labels; never print Docker's full
 		// label set, which may contain unrelated sensitive metadata.
 		for _, suffix := range []string{"server-0", "serverlb"} {
