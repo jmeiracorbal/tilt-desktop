@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,7 +41,7 @@ func TestK3dAndTiltLifecycle(t *testing.T) {
 	}
 	t.Setenv("KUBECONFIG", global)
 	private := filepath.Join(root, "k3d-kubeconfig")
-	client, err := k3d.NewClient(k3d.ExecRunner{Binary: "k3d", KubeconfigPath: private})
+	client, err := k3d.NewClient(k3d.ExecRunner{Binary: "k3d", KubeconfigPath: private}, k3d.DockerInspector{Binary: "docker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,52 +74,6 @@ func TestK3dAndTiltLifecycle(t *testing.T) {
 
 	t.Logf("ensuring isolated k3d cluster %s", name)
 	if err := client.Ensure(ctx, spec); err != nil {
-		clusters, listErr := client.List(ctx)
-		if listErr == nil {
-			for _, cluster := range clusters {
-				if cluster.Name == name {
-					for _, node := range cluster.Nodes {
-						t.Logf("observed node role=%q running=%t managed-by=%q management-id=%q", node.Role, node.State.Running, node.RuntimeLabels["dev.tilt-desktop.managed-by"], node.RuntimeLabels["dev.tilt-desktop.management-id"])
-					}
-				}
-			}
-		}
-		// Check whether k3d's node-level listing preserves the runtime
-		// labels that are absent from its cluster-level summary.
-		nodeListData, nodeListErr := exec.CommandContext(ctx, "k3d", "node", "list", "--output", "json").Output()
-		if nodeListErr != nil {
-			t.Logf("k3d node list failed: %v", nodeListErr)
-		} else {
-			var nodes []struct {
-				Name string `json:"name"`
-				RuntimeLabels map[string]string `json:"runtimeLabels"`
-			}
-			if decodeErr := json.Unmarshal(nodeListData, &nodes); decodeErr != nil {
-				t.Logf("decode k3d node list: %v", decodeErr)
-			} else {
-				for _, n := range nodes {
-					if strings.HasPrefix(n.Name, "k3d-"+name+"-") {
-						t.Logf("k3d node %q managed-by=%q management-id=%q", n.Name, n.RuntimeLabels["dev.tilt-desktop.managed-by"], n.RuntimeLabels["dev.tilt-desktop.management-id"])
-					}
-				}
-			}
-		}
-		// Inspect only our two ownership labels; never print Docker's full
-		// label set, which may contain unrelated sensitive metadata.
-		for _, suffix := range []string{"server-0", "serverlb"} {
-			container := "k3d-" + name + "-" + suffix
-			raw, inspectErr := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .Config.Labels}}", container).Output()
-			if inspectErr != nil {
-				t.Logf("inspect %s: %v", container, inspectErr)
-				continue
-			}
-			var labels map[string]string
-			if parseErr := json.Unmarshal(raw, &labels); parseErr != nil {
-				t.Logf("decode %s labels: %v", container, parseErr)
-				continue
-			}
-			t.Logf("Docker %s managed-by=%q management-id=%q", suffix, labels["dev.tilt-desktop.managed-by"], labels["dev.tilt-desktop.management-id"])
-		}
 		t.Fatalf("create k3d cluster: %v", err)
 	}
 	if err := client.Ensure(ctx, spec); err != nil {
