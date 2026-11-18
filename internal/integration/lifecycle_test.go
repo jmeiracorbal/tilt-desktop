@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +52,15 @@ func TestK3dAndTiltLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := "tdi-" + hex.EncodeToString(entropy[:])
-	spec := k3d.Spec{Name: name, ManagementID: name}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("allocate localhost registry port: %v", err)
+	}
+	registryPort := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release registry port for k3d: %v", err)
+	}
+	spec := k3d.Spec{Name: name, ManagementID: name, RegistryPort: uint16(registryPort)}
 	// Cleanup is independent of the production ownership check: the test
 	// generated this unique name and must never leak its ephemeral cluster.
 	t.Cleanup(func() {
@@ -164,7 +173,7 @@ data:
 		t.Fatalf("Tilt did not deploy ConfigMap: %v", err)
 	}
 	t.Log("waiting for Tilt image build, registry push and deployment readiness")
-	if err := await(ctx, 75*time.Second, func(ctx context.Context) error {
+	if err := await(ctx, readyTimeout, func(ctx context.Context) error {
 		_, err := kubectl(ctx, configPath, name, "rollout", "status", "deployment/tilt-desktop-integration", "--timeout=8s")
 		return err
 	}); err != nil {
