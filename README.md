@@ -12,11 +12,13 @@ Tilt Desktop is a local Kubernetes development-environment manager built in Go. 
 ## Current implementation
 
 - `internal/project`: validates application IDs, project directories, Tiltfiles, and dedicated/shared cluster assignments.
+- `internal/tilt`: starts and supervises independent Tilt processes for project/k3d-cluster pairs with explicit private kubeconfig and bound localhost port; reads UIResource snapshots and bounded log output using the Tilt CLI.
+- Tilt child processes are stopped by interrupting the process, not by running `tilt down`. Unexpected process exits are exposed through session status.
 - `internal/k3d`: discovers clusters, ensures a cluster is created or running, stops and deletes only clusters whose k3d runtime labels match the requested management ID, and reads their kubeconfig.
 - A newly created cluster receives a dedicated k3d-managed registry bound to localhost, with a dynamically assigned host port.
 - The k3d CLI runs through Go's `os/exec`, without Bash scripts. `NewLocalClient` uses an isolated `KUBECONFIG` under the user's config directory and creation disables k3d's default kubeconfig update.
 
-**Limitations:** the k3d client has been unit-tested with a simulated command runner but has not yet been verified against a running k3d cluster. The application catalog, ownership persistence, cross-process synchronization, shared-cluster usage protection, process supervision for Tilt, and Fyne interface remain unimplemented. Destructive operations must not be surfaced through a UI until user confirmation and shared-cluster usage checks are in place.
+**Limitations:** k3d and Tilt integrations have been unit-tested through simulated runners but have not been exercised end-to-end against a running cluster and a real Tilt process. The Tilt session manager does not yet allocate host ports automatically or recover orphaned processes across application restarts; startup acknowledgement does not imply that workloads are ready. Graceful signal handling remains unverified on Windows. The application catalog, ownership persistence, cross-process synchronization, shared-cluster usage protection, and Fyne interface remain unimplemented. Destructive operations must not be surfaced through a UI until user confirmation and shared-cluster usage checks are in place.
 
 ## Development
 
