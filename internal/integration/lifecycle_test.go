@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,6 +84,22 @@ func TestK3dAndTiltLifecycle(t *testing.T) {
 					}
 				}
 			}
+		}
+		// Inspect only our two ownership labels; never print Docker's full
+		// label set, which may contain unrelated sensitive metadata.
+		for _, suffix := range []string{"server-0", "serverlb"} {
+			container := "k3d-" + name + "-" + suffix
+			raw, inspectErr := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{json .Config.Labels}}", container).Output()
+			if inspectErr != nil {
+				t.Logf("inspect %s: %v", container, inspectErr)
+				continue
+			}
+			var labels map[string]string
+			if parseErr := json.Unmarshal(raw, &labels); parseErr != nil {
+				t.Logf("decode %s labels: %v", container, parseErr)
+				continue
+			}
+			t.Logf("Docker %s managed-by=%q management-id=%q", suffix, labels["dev.tilt-desktop.managed-by"], labels["dev.tilt-desktop.management-id"])
 		}
 		t.Fatalf("create k3d cluster: %v", err)
 	}
