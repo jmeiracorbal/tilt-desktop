@@ -247,7 +247,7 @@ func (m *Manager) Resources(ctx context.Context, projectID string) ([]Resource, 
 	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, fmt.Errorf("decode Tilt UIResources: %w", err)
 	}
-	if list.Kind != "UIResourceList" {
+	if list.Kind != "List" {
 		return nil, fmt.Errorf("unexpected Tilt resource kind %q", list.Kind)
 	}
 	result := make([]Resource, 0, len(list.Items))

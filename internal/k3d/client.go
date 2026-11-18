@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -31,6 +32,7 @@ type Runner interface {
 // applications may share a Spec without owning the cluster individually.
 type Spec struct {
 	Name, ManagementID string
+	RegistryPort uint16
 }
 
 func (s Spec) validate() error {
@@ -40,13 +42,16 @@ func (s Spec) validate() error {
 	if len(s.ManagementID) > 63 || !validName.MatchString(s.ManagementID) {
 		return fmt.Errorf("invalid cluster management ID %q", s.ManagementID)
 	}
+	if s.RegistryPort == 0 {
+		return errors.New("registry host port is required")
+	}
 	return nil
 }
 
 // Node contains only the k3d JSON fields needed for lifecycle decisions.
 type Node struct {
-	Role          string            `json:"role"`
-	RuntimeLabels map[string]string `json:"runtimeLabels"`
+	Name string `json:"name"`
+	Role string `json:"role"`
 	State         struct {
 		Running bool `json:"Running"`
 	} `json:"State"`
@@ -80,14 +85,26 @@ func (c Cluster) anyRunning() bool {
 	return false
 }
 
-func (c Cluster) checkOwnership(s Spec) error {
+// checkOwnership inspects labels on the actual runtime containers. k3d's
+// cluster/node listings omit user-supplied runtime labels in their JSON.
+func (c Cluster) checkOwnership(ctx context.Context, s Spec, inspector ContainerInspector) error {
+	if len(c.Nodes) == 0 {
+		return fmt.Errorf("%w: cluster %q has no nodes", ErrUnmanaged, s.Name)
+	}
 	hasServer := false
 	for _, n := range c.Nodes {
 		if n.Role == "server" {
 			hasServer = true
 		}
-		if n.RuntimeLabels[managedLabel] != managedValue || n.RuntimeLabels[ownerLabel] != s.ManagementID {
-			return fmt.Errorf("%w: %s", ErrUnmanaged, s.Name)
+		if !strings.HasPrefix(n.Name, "k3d-"+s.Name+"-") {
+			return fmt.Errorf("%w: unexpected node %q", ErrUnmanaged, n.Name)
+		}
+		labels, err := inspector.Labels(ctx, n.Name)
+		if err != nil {
+			return fmt.Errorf("inspect container %q: %w", n.Name, err)
+		}
+		if labels[managedLabel] != managedValue || labels[ownerLabel] != s.ManagementID {
+			return fmt.Errorf("%w: %s (node %q)", ErrUnmanaged, s.Name, n.Name)
 		}
 	}
 	if !hasServer {
@@ -100,14 +117,18 @@ func (c Cluster) checkOwnership(s Spec) error {
 // layer must coordinate access between processes.
 type Client struct {
 	runner Runner
-	mu     sync.Mutex
+	inspector ContainerInspector
+	mu sync.Mutex
 }
 
-func NewClient(r Runner) (*Client, error) {
+func NewClient(r Runner, inspector ContainerInspector) (*Client, error) {
 	if r == nil {
 		return nil, errors.New("k3d runner is required")
 	}
-	return &Client{runner: r}, nil
+	if inspector == nil {
+		return nil, errors.New("container inspector is required")
+	}
+	return &Client{runner: r, inspector: inspector}, nil
 }
 
 func (c *Client) List(ctx context.Context) ([]Cluster, error) {
@@ -151,7 +172,7 @@ func (c *Client) Ensure(ctx context.Context, s Spec) error {
 		return err
 	}
 	if current != nil {
-		if err := current.checkOwnership(s); err != nil {
+		if err := current.checkOwnership(ctx, s, c.inspector); err != nil {
 			return err
 		}
 		if current.allRunning() {
@@ -166,7 +187,7 @@ func (c *Client) Ensure(ctx context.Context, s Spec) error {
 			"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 			"--runtime-label", managedLabel+"="+managedValue+"@all",
 			"--runtime-label", ownerLabel+"="+s.ManagementID+"@all",
-			"--registry-create", s.Name+"-registry:127.0.0.1")
+			"--registry-create", fmt.Sprintf("%s-registry:127.0.0.1:%d", s.Name, s.RegistryPort))
 		if err != nil {
 			return fmt.Errorf("create cluster %q: %w", s.Name, err)
 		}
@@ -178,7 +199,7 @@ func (c *Client) Ensure(ctx context.Context, s Spec) error {
 	if actual == nil {
 		return fmt.Errorf("cluster %q absent after ensure", s.Name)
 	}
-	if err := actual.checkOwnership(s); err != nil {
+	if err := actual.checkOwnership(ctx, s, c.inspector); err != nil {
 		return err
 	}
 	if !actual.allRunning() {
@@ -202,7 +223,7 @@ func (c *Client) Stop(ctx context.Context, s Spec) error {
 	if current == nil {
 		return fmt.Errorf("%w: %s", ErrNotFound, s.Name)
 	}
-	if err := current.checkOwnership(s); err != nil {
+	if err := current.checkOwnership(ctx, s, c.inspector); err != nil {
 		return err
 	}
 	if !current.anyRunning() {
@@ -218,7 +239,7 @@ func (c *Client) Stop(ctx context.Context, s Spec) error {
 	if actual == nil {
 		return fmt.Errorf("cluster %q absent after stop", s.Name)
 	}
-	if err := actual.checkOwnership(s); err != nil {
+	if err := actual.checkOwnership(ctx, s, c.inspector); err != nil {
 		return err
 	}
 	if actual.anyRunning() {
@@ -242,7 +263,7 @@ func (c *Client) Delete(ctx context.Context, s Spec) error {
 	if current == nil {
 		return nil
 	}
-	if err := current.checkOwnership(s); err != nil {
+	if err := current.checkOwnership(ctx, s, c.inspector); err != nil {
 		return err
 	}
 	if _, err := c.runner.Run(ctx, "cluster", "delete", s.Name); err != nil {
@@ -271,7 +292,7 @@ func (c *Client) Kubeconfig(ctx context.Context, s Spec) ([]byte, error) {
 	if current == nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, s.Name)
 	}
-	if err := current.checkOwnership(s); err != nil {
+	if err := current.checkOwnership(ctx, s, c.inspector); err != nil {
 		return nil, err
 	}
 	data, err := c.runner.Run(ctx, "kubeconfig", "get", s.Name)

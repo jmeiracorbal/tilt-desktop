@@ -196,7 +196,7 @@ func TestStartAndStopErrors(t *testing.T) {
 
 func TestObservabilityUsesInstancePort(t *testing.T) {
 	config := testConfig(t)
-	l := &fakeLauncher{output: []byte(`{"kind":"UIResourceList","items":[{"metadata":{"name":"api"},"status":{"runtimeStatus":"ok","updateStatus":"pending"}}]}`)}
+	l := &fakeLauncher{output: []byte(`{"kind":"List","items":[{"metadata":{"name":"api"},"status":{"runtimeStatus":"ok","updateStatus":"pending"}}]}`)}
 	m, _ := NewManager(l)
 	if err := m.Start(context.Background(), config); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestResourcesRejectMalformedResponses(t *testing.T) {
 	if err := m.Start(context.Background(), config); err != nil {
 		t.Fatal(err)
 	}
-	for _, payload := range []string{`invalid`, `{"kind":"OtherList","items":[]}`, `{"kind":"UIResourceList","items":[{}]}`} {
+	for _, payload := range []string{`invalid`, `{"kind":"OtherList","items":[]}`, `{"kind":"List","items":[{}]}`} {
 		l.output = []byte(payload)
 		if _, err := m.Resources(context.Background(), config.ProjectID); err == nil {
 			t.Fatalf("accepted %q", payload)

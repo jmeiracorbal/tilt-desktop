@@ -46,24 +46,33 @@ func listing(clusters ...Cluster) step {
 	return step{args: []string{"cluster", "list", "--output", "json"}, out: b}
 }
 
-func owned(name, id string, running bool) Cluster {
-	n := Node{Role: "server", RuntimeLabels: map[string]string{managedLabel: managedValue, ownerLabel: id}}
+func owned(name, _ string, running bool) Cluster {
+	n := Node{Name: "k3d-" + name + "-server-0", Role: "server"}
 	n.State.Running = running
 	return Cluster{Name: name, Nodes: []Node{n}}
 }
 
 func foreign(name string) Cluster {
-	return Cluster{Name: name, Nodes: []Node{{Role: "server"}}}
+	return Cluster{Name: name, Nodes: []Node{{Name: "k3d-" + name + "-server-0", Role: "server"}}}
+}
+
+type stubInspector struct { owner string }
+
+func (i stubInspector) Labels(_ context.Context, _ string) (map[string]string, error) {
+	if i.owner == "" {
+		return map[string]string{}, nil
+	}
+	return map[string]string{managedLabel: managedValue, ownerLabel: i.owner}, nil
 }
 
 func action(args ...string) step {
 	return step{args: args}
 }
 
-func client(t *testing.T, steps ...step) (*Client, *script) {
+func client(t *testing.T, owner string, steps ...step) (*Client, *script) {
 	t.Helper()
 	s := &script{t: t, steps: steps}
-	c, err := NewClient(s)
+	c, err := NewClient(s, stubInspector{owner: owner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,12 +80,12 @@ func client(t *testing.T, steps ...step) (*Client, *script) {
 }
 
 func TestEnsureCreatesAndVerifies(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "project-123"}
-	c, r := client(t, listing(), action("cluster", "create", "sample", "--wait", "--timeout", "120s",
+	s := Spec{Name: "sample", ManagementID: "project-123", RegistryPort: 5111}
+	c, r := client(t, "project-123", listing(), action("cluster", "create", "sample", "--wait", "--timeout", "120s",
 		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 		"--runtime-label", managedLabel+"="+managedValue+"@all",
 		"--runtime-label", ownerLabel+"=project-123@all",
-		"--registry-create", "sample-registry:127.0.0.1"), listing(owned("sample", "project-123", true)))
+		"--registry-create", "sample-registry:127.0.0.1:5111"), listing(owned("sample", "project-123", true)))
 	if err := c.Ensure(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
@@ -84,16 +93,16 @@ func TestEnsureCreatesAndVerifies(t *testing.T) {
 }
 
 func TestEnsureNoopAndResume(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "project-123"}
+	s := Spec{Name: "sample", ManagementID: "project-123", RegistryPort: 5111}
 	t.Run("running", func(t *testing.T) {
-		c, r := client(t, listing(owned("sample", s.ManagementID, true)))
+		c, r := client(t, "project-123", listing(owned("sample", s.ManagementID, true)))
 		if err := c.Ensure(context.Background(), s); err != nil {
 			t.Fatal(err)
 		}
 		r.done()
 	})
 	t.Run("stopped", func(t *testing.T) {
-		c, r := client(t,
+		c, r := client(t, "project-123",
 			listing(owned("sample", s.ManagementID, false)),
 			action("cluster", "start", "sample", "--wait", "--timeout", "120s"),
 			listing(owned("sample", s.ManagementID, true)))
@@ -105,7 +114,7 @@ func TestEnsureNoopAndResume(t *testing.T) {
 }
 
 func TestUnmanagedClusterNeverMutated(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
 	for _, op := range []struct {
 		name string
 		fn   func(*Client) error
@@ -115,7 +124,7 @@ func TestUnmanagedClusterNeverMutated(t *testing.T) {
 		{"delete", func(c *Client) error { return c.Delete(context.Background(), s) }},
 	} {
 		t.Run(op.name, func(t *testing.T) {
-			c, r := client(t, listing(foreign("sample")))
+			c, r := client(t, "", listing(foreign("sample")))
 			err := op.fn(c)
 			if !errors.Is(err, ErrUnmanaged) {
 				t.Fatalf("got %v", err)
@@ -126,45 +135,45 @@ func TestUnmanagedClusterNeverMutated(t *testing.T) {
 }
 
 func TestWrongManagementIDNeverMutated(t *testing.T) {
-	c, r := client(t, listing(owned("sample", "someone-else", true)))
-	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine"}); !errors.Is(err, ErrUnmanaged) {
+	c, r := client(t, "someone-else", listing(owned("sample", "someone-else", true)))
+	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}); !errors.Is(err, ErrUnmanaged) {
 		t.Fatalf("got %v", err)
 	}
 	r.done()
 }
 
 func TestStopAndDelete(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
 	t.Run("stop running", func(t *testing.T) {
-		c, r := client(t, listing(owned("sample", "mine", true)), action("cluster", "stop", "sample"), listing(owned("sample", "mine", false)))
+		c, r := client(t, "mine", listing(owned("sample", "mine", true)), action("cluster", "stop", "sample"), listing(owned("sample", "mine", false)))
 		if err := c.Stop(context.Background(), s); err != nil {
 			t.Fatal(err)
 		}
 		r.done()
 	})
 	t.Run("stop already stopped", func(t *testing.T) {
-		c, r := client(t, listing(owned("sample", "mine", false)))
+		c, r := client(t, "mine", listing(owned("sample", "mine", false)))
 		if err := c.Stop(context.Background(), s); err != nil {
 			t.Fatal(err)
 		}
 		r.done()
 	})
 	t.Run("delete", func(t *testing.T) {
-		c, r := client(t, listing(owned("sample", "mine", true)), action("cluster", "delete", "sample"), listing())
+		c, r := client(t, "mine", listing(owned("sample", "mine", true)), action("cluster", "delete", "sample"), listing())
 		if err := c.Delete(context.Background(), s); err != nil {
 			t.Fatal(err)
 		}
 		r.done()
 	})
 	t.Run("delete already missing", func(t *testing.T) {
-		c, r := client(t, listing())
+		c, r := client(t, "mine", listing())
 		if err := c.Delete(context.Background(), s); err != nil {
 			t.Fatal(err)
 		}
 		r.done()
 	})
 	t.Run("stop missing", func(t *testing.T) {
-		c, r := client(t, listing())
+		c, r := client(t, "mine", listing())
 		if err := c.Stop(context.Background(), s); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("got %v", err)
 		}
@@ -173,8 +182,8 @@ func TestStopAndDelete(t *testing.T) {
 }
 
 func TestKubeconfigRequiresOwnership(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
-	c, r := client(t, listing(owned("sample", "mine", true)),
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
+	c, r := client(t, "mine", listing(owned("sample", "mine", true)),
 		step{args: []string{"kubeconfig", "get", "sample"}, out: []byte("apiVersion: v1\n")})
 	got, err := c.Kubeconfig(context.Background(), s)
 	if err != nil || string(got) != "apiVersion: v1\n" {
@@ -190,7 +199,7 @@ func TestInvalidSpecNoCalls(t *testing.T) {
 		{Name: "-foo", ManagementID: "mine"},
 	} {
 		t.Run(fmt.Sprintf("%+v", s), func(t *testing.T) {
-			c, r := client(t)
+			c, r := client(t, "mine")
 			if err := c.Ensure(context.Background(), s); err == nil {
 				t.Fatal("expected validation error")
 			}
@@ -200,26 +209,26 @@ func TestInvalidSpecNoCalls(t *testing.T) {
 }
 
 func TestInvalidJSONAndErrors(t *testing.T) {
-	c, r := client(t, step{args: []string{"cluster", "list", "--output", "json"}, out: []byte("invalid")})
+	c, r := client(t, "mine", step{args: []string{"cluster", "list", "--output", "json"}, out: []byte("invalid")})
 	if _, err := c.List(context.Background()); err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Fatalf("got %v", err)
 	}
 	r.done()
-	c, r = client(t, step{args: []string{"cluster", "list", "--output", "json"}, err: errors.New("runtime unavailable")})
-	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine"}); err == nil || !strings.Contains(err.Error(), "runtime unavailable") {
+	c, r = client(t, "mine", step{args: []string{"cluster", "list", "--output", "json"}, err: errors.New("runtime unavailable")})
+	if err := c.Ensure(context.Background(), Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}); err == nil || !strings.Contains(err.Error(), "runtime unavailable") {
 		t.Fatalf("got %v", err)
 	}
 	r.done()
 }
 
 func TestEnsureChecksPostconditions(t *testing.T) {
-	s := Spec{Name: "sample", ManagementID: "mine"}
-	c, r := client(t, listing(),
+	s := Spec{Name: "sample", ManagementID: "mine", RegistryPort: 5111}
+	c, r := client(t, "", listing(),
 		action("cluster", "create", "sample", "--wait", "--timeout", "120s",
 			"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
 			"--runtime-label", managedLabel+"="+managedValue+"@all",
 			"--runtime-label", ownerLabel+"=mine@all",
-			"--registry-create", "sample-registry:127.0.0.1"),
+			"--registry-create", "sample-registry:127.0.0.1:5111"),
 		listing(foreign("sample")))
 	if err := c.Ensure(context.Background(), s); !errors.Is(err, ErrUnmanaged) {
 		t.Fatalf("got %v", err)
