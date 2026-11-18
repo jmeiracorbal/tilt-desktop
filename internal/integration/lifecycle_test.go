@@ -164,7 +164,7 @@ data:
 		t.Fatalf("Tilt did not deploy ConfigMap: %v", err)
 	}
 	t.Log("waiting for Tilt image build, registry push and deployment readiness")
-	if err := await(ctx, readyTimeout, func(ctx context.Context) error {
+	if err := await(ctx, 75*time.Second, func(ctx context.Context) error {
 		_, err := kubectl(ctx, configPath, name, "rollout", "status", "deployment/tilt-desktop-integration", "--timeout=8s")
 		return err
 	}); err != nil {
