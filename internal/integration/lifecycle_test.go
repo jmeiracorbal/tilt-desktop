@@ -52,16 +52,38 @@ func TestK3dAndTiltLifecycle(t *testing.T) {
 	}
 	name := "tdi-" + hex.EncodeToString(entropy[:])
 	spec := k3d.Spec{Name: name, ManagementID: name}
+	// Cleanup is independent of the production ownership check: the test
+	// generated this unique name and must never leak its ephemeral cluster.
 	t.Cleanup(func() {
 		cleanupCtx, done := context.WithTimeout(context.Background(), 90*time.Second)
 		defer done()
-		if err := client.Delete(cleanupCtx, spec); err != nil {
-			t.Errorf("clean up integration cluster %q: %v", name, err)
+		clusters, err := client.List(cleanupCtx)
+		if err != nil {
+			t.Errorf("list clusters for cleanup: %v", err)
+			return
+		}
+		for _, cluster := range clusters {
+			if cluster.Name == name {
+				if _, err := (k3d.ExecRunner{Binary: "k3d", KubeconfigPath: private}).Run(cleanupCtx, "cluster", "delete", name); err != nil {
+					t.Errorf("clean up test-owned cluster %q: %v", name, err)
+				}
+				return
+			}
 		}
 	})
 
 	t.Logf("ensuring isolated k3d cluster %s", name)
 	if err := client.Ensure(ctx, spec); err != nil {
+		clusters, listErr := client.List(ctx)
+		if listErr == nil {
+			for _, cluster := range clusters {
+				if cluster.Name == name {
+					for _, node := range cluster.Nodes {
+						t.Logf("observed node role=%q running=%t managed-by=%q management-id=%q", node.Role, node.State.Running, node.RuntimeLabels["dev.tilt-desktop.managed-by"], node.RuntimeLabels["dev.tilt-desktop.management-id"])
+					}
+				}
+			}
+		}
 		t.Fatalf("create k3d cluster: %v", err)
 	}
 	if err := client.Ensure(ctx, spec); err != nil {
@@ -172,6 +194,9 @@ data:
 	}
 	if err := verifyGlobal(global, marker); err != nil {
 		t.Fatal(err)
+	}
+	if err := client.Delete(ctx, spec); err != nil {
+		t.Fatalf("delete managed k3d cluster: %v", err)
 	}
 	t.Log("k3d and Tilt integration lifecycle completed")
 }
