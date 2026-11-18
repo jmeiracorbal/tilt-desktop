@@ -168,6 +168,14 @@ data:
 		_, err := kubectl(ctx, configPath, name, "rollout", "status", "deployment/tilt-desktop-integration", "--timeout=8s")
 		return err
 	}); err != nil {
+		if output, logErr := manager.Logs(ctx, config.ProjectID, "", 300); logErr == nil {
+			t.Logf("Tilt deployment diagnostics:\n%s", output)
+		} else {
+			t.Logf("could not read Tilt diagnostics: %v", logErr)
+		}
+		if output, listErr := kubectl(ctx, configPath, name, "get", "deployments,pods", "-A"); listErr == nil {
+			t.Logf("Kubernetes deployment diagnostics:\n%s", output)
+		}
 		t.Fatalf("Tilt did not deploy the built image: %v", err)
 	}
 	if _, err := manager.Logs(ctx, config.ProjectID, "", 100); err != nil {
