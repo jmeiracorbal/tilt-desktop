@@ -22,12 +22,12 @@ func (c *Client) RegistryPort(ctx context.Context, clusterName string) (uint16, 
 }
 
 type registryInfo struct {
-	Name string \`json:"name"\`
-	RuntimeLabels map[string]string \`json:"runtimeLabels"\`
+	Name string `json:"name"`
+	RuntimeLabels map[string]string `json:"runtimeLabels"`
 	PortMappings map[string][]struct {
-		HostIP string \`json:"HostIp"\`
-		HostPort string \`json:"HostPort"\`
-	} \`json:"portMappings"\`
+		HostIP string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	} `json:"portMappings"`
 }
 
 func parseRegistryPort(clusterName string, output []byte) (uint16, error) {
