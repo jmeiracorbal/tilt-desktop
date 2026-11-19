@@ -34,9 +34,6 @@ jobs:
             runner: windows-2025
             goos: windows
             archive: TiltDesktop-windows-amd64.zip
-    env:
-      GOBIN: ${{ runner.temp }}/fyne-tools
-      CGO_ENABLED: 1
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -64,12 +61,12 @@ jobs:
 
       - name: Add Fyne tool to PATH on Unix
         if: runner.os != 'Windows'
-        run: echo "$GOBIN" >> "$GITHUB_PATH"
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Add Fyne tool to PATH on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: '"$env:GOBIN" >> $env:GITHUB_PATH'
+        run: '"$(go env GOPATH)\bin" >> $env:GITHUB_PATH'
 
       - name: Native desktop packaging
         run: fyne package -os ${{ matrix.goos }} -src ./cmd/tilt-desktop -name TiltDesktop -app-id dev.tilt-desktop
