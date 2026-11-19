@@ -172,11 +172,20 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 		_ = os.Remove(path)
 		return m.rollback(spec,existed,fmt.Errorf("close private kubeconfig: %w",err))
 	}
-	port,err:=m.ports.Available()
-	if err!=nil || port==0 {
-		_ = os.Remove(path)
-		if err==nil {err=errors.New("port allocator returned zero Tilt port")}
-		return m.rollback(spec,existed,fmt.Errorf("allocate Tilt HTTP port: %w",err))
+	port:=a.config.Port
+	if port!=0 {
+		if !loopbackPortFree(port){
+			_ = os.Remove(path)
+			return m.rollback(spec,existed,fmt.Errorf("previously assigned Tilt port %d is unavailable",port))
+		}
+	}else{
+		var err error
+		port,err=m.ports.Available()
+		if err!=nil || port==0 {
+			_ = os.Remove(path)
+			if err==nil {err=errors.New("port allocator returned zero Tilt port")}
+			return m.rollback(spec,existed,fmt.Errorf("allocate Tilt HTTP port: %w",err))
+		}
 	}
 	config:=tilt.Config{ProjectID:id,Directory:a.definition.Directory,Kubeconfig:path,ClusterName:spec.Name,Port:port}
 	if m.beforeTiltStart!=nil {
