@@ -67,8 +67,8 @@ func openCatalog(path string) (*catalogStore, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("catalog %q must be a regular file",path)
 	}
-	if info.Mode().Perm() & 0077 != 0 {
-		return nil, fmt.Errorf("catalog %q permits access by other users",path)
+	if err := requirePrivateFile(path, info); err != nil {
+		return nil, err
 	}
 	payload,err:=os.ReadFile(path)
 	if err!=nil{return nil,fmt.Errorf("read catalog: %w",err)}
@@ -156,7 +156,7 @@ func (s *catalogStore) flush() error {
 	temp,err:=os.CreateTemp(filepath.Dir(s.path),".catalog-*")
 	if err!=nil{return fmt.Errorf("prepare catalog replacement: %w",err)}
 	defer os.Remove(temp.Name())
-	if err:=temp.Chmod(0600);err!=nil{temp.Close();return err}
+	if err:=protectPrivateFile(temp.Name());err!=nil{temp.Close();return err}
 	if _,err:=temp.Write(payload);err!=nil{temp.Close();return fmt.Errorf("write catalog: %w",err)}
 	if err:=temp.Sync();err!=nil{temp.Close();return fmt.Errorf("sync catalog: %w",err)}
 	if err:=temp.Close();err!=nil{return fmt.Errorf("close catalog: %w",err)}
