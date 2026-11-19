@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,7 +35,8 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	if err!=nil{t.Fatal(err)}
 	tiltManager,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{t.Fatal(err)}
-	manager,err:=application.NewManager(client,tiltManager,application.NetPorts{},client)
+	catalogPath:=filepath.Join(root,"catalog.json")
+	manager,err:=application.NewPersistentManager(client,tiltManager,application.NetPorts{},client,tiltManager,catalogPath)
 	if err!=nil{t.Fatal(err)}
 	projectDir:=filepath.Join(root,"app")
 	if err:=os.Mkdir(projectDir,0700);err!=nil{t.Fatal(err)}
@@ -72,6 +74,24 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	}
 	saveKubeconfig()
 	if err:=await(ctx,readyTimeout,func(ctx context.Context)error{
+		observed,err:=tiltManager.Inspect(ctx,tilt.Config{
+			ProjectID:def.ID,Directory:projectDir,ClusterName:def.ID,
+			Kubeconfig:configPath,Port:state.TiltPort,
+		})
+		if err!=nil{return err}
+		if observed.PID<=0{return fmt.Errorf("Tilt session has no process ID")}
+		return nil
+	});err!=nil{t.Fatalf("Tilt Session API could not verify process identity: %v",err)}
+	// A second manager can observe the live session, but must not adopt it
+	// or start a duplicate while its original owner still runs.
+	observerTilt,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
+	if err!=nil{t.Fatal(err)}
+	observer,err:=application.NewPersistentManager(client,observerTilt,application.NetPorts{},client,observerTilt,catalogPath)
+	if err!=nil{t.Fatal(err)}
+	observedState,err:=observer.Reconcile(ctx,def.ID)
+	if err!=nil||observedState.Phase!="orphaned" {t.Fatalf("unsafe orphan reconciliation: %+v %v",observedState,err)}
+	if err:=observer.Start(ctx,def.ID);!errors.Is(err,application.ErrUnverifiedSession){t.Fatalf("orphan duplicate start: %v",err)}
+	if err:=await(ctx,readyTimeout,func(ctx context.Context)error{
 		_,err:=kubectl(ctx,configPath,def.ID,"get","configmap","tilt-desktop-app-manager")
 		return err
 	});err!=nil{t.Fatalf("Tilt did not deploy via application manager: %v",err)}
@@ -89,10 +109,12 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	// It must rediscover the existing cluster and its real registry port.
 	secondTilt,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{t.Fatal(err)}
-	second,err:=application.NewManager(client,secondTilt,application.NetPorts{},client)
+	second,err:=application.NewPersistentManager(client,secondTilt,application.NetPorts{},client,secondTilt,catalogPath)
 	if err!=nil{t.Fatal(err)}
-	reopened,err:=second.Register(projectDir)
-	if err!=nil||reopened.ID!=def.ID{t.Fatalf("re-register after restart: %+v %v",reopened,err)}
+	entries:=second.List()
+	if len(entries)!=1||entries[0].ProjectID!=def.ID||entries[0].Phase!="idle"{
+		t.Fatalf("catalog not restored: %+v",entries)
+	}
 	t.Log("restarting application and recovering the existing dedicated cluster")
 	if err:=second.Start(ctx,def.ID);err!=nil{t.Fatalf("recover existing cluster: %v",err)}
 	state,err=second.Status(def.ID)
