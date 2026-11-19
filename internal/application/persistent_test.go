@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,10 @@ func TestPersistentRegistrationAndStopSurviveRestart(t *testing.T){
 		t.Fatalf("reloaded records %+v",list)
 	}
 	if err:=reloaded.Start(context.Background(),def.ID);err!=nil{t.Fatal(err)}
+	restarted,err:=reloaded.Status(def.ID)
+	if err!=nil||restarted.TiltPort!=state.TiltPort||p.index!=2{
+		t.Fatalf("persisted Tilt port was not reused: %+v index=%d err=%v",restarted,p.index,err)
+	}
 	if err:=reloaded.Stop(context.Background(),def.ID);err!=nil{t.Fatal(err)}
 	if err:=reloaded.Delete(context.Background(),def.ID,false);!errors.Is(err,ErrConfirmationRequired){t.Fatalf("delete without confirmation: %v",err)}
 	if err:=reloaded.Delete(context.Background(),def.ID,true);err!=nil{t.Fatal(err)}
@@ -123,4 +128,25 @@ func TestPersistentRegistrationRejectsMissingTiltfile(t *testing.T){
 	without:=t.TempDir()
 	if _,err:=m.Register(without);err==nil||!strings.Contains(err.Error(),"Tiltfile"){t.Fatalf("accepted missing Tiltfile: %v",err)}
 	if len(m.List())!=0{t.Fatal("invalid project added to catalog")}
+}
+
+
+func TestPersistedTiltPortConflictStopsBeforeProcessLaunch(t *testing.T){
+	m,c,tm,p,r,observer,dir,path:=persistentFixture(t)
+	def,err:=m.Register(dir);if err!=nil{t.Fatal(err)}
+	listener,err:=net.Listen("tcp4","127.0.0.1:0")
+	if err!=nil{t.Fatal(err)}
+	defer listener.Close()
+	taken:=uint16(listener.Addr().(*net.TCPAddr).Port)
+	rec,err:=m.record(def.ID);if err!=nil{t.Fatal(err)}
+	rec.TiltPort=taken
+	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
+	restored,err:=NewPersistentManager(c,tm,p,r,observer,path)
+	if err!=nil{t.Fatal(err)}
+	err=restored.Start(context.Background(),def.ID)
+	if err==nil||!strings.Contains(err.Error(),"unavailable"){
+		t.Fatalf("accepted port occupied by another service: %v",err)
+	}
+	if len(tm.configs)!=0{t.Fatal("Tilt launched despite occupied port")}
+	if c.exists{t.Fatal("new cluster was not rolled back")}
 }
