@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -42,7 +40,7 @@ func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registr
 	core,err:=NewManager(clusters,tiltManager,ports,registries)
 	if err!=nil{return nil,err}
 	for _,rec:=range store.all(){
-		core.apps[rec.ID]=&entry{definition:project.Definition{
+		core.apps[rec.ID]=&entry{config:tilt.Config{Port:rec.TiltPort},definition:project.Definition{
 			ID:rec.ID,Directory:rec.Directory,Tiltfile:filepath.Join(rec.Directory,"Tiltfile"),
 			Cluster:project.ClusterAssignment{Mode:project.Dedicated,Name:rec.ClusterName},
 		}}
@@ -218,12 +216,6 @@ func processAlive(pid int64)(bool,error){
 	if err==nil{return true,nil}
 	if errors.Is(err,syscall.ESRCH)||errors.Is(err,os.ErrProcessDone){return false,nil}
 	return false,err
-}
-
-func loopbackPortFree(port uint16)bool{
-	l,err:=net.Listen("tcp4",net.JoinHostPort("127.0.0.1",strconv.Itoa(int(port))))
-	if err!=nil{return false}
-	return l.Close()==nil
 }
 
 func removePrivateKubeconfig(path string)error{
