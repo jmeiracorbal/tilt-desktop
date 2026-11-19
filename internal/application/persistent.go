@@ -129,7 +129,7 @@ func (m *PersistentManager) Start(ctx context.Context,id string)error{
 		}
 		return err
 	}
-	status,err:=m.core.Status(id)
+	status,err:=m.core.tilt.Status(id)
 	if err!=nil{return err}
 	a,err:=m.core.lookup(id)
 	if err!=nil{return err}
