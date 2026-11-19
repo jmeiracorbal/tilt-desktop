@@ -50,7 +50,11 @@ type fakeRegistries struct {port uint16; err error; calls int}
 func (r *fakeRegistries)RegistryPort(_ context.Context,_ string)(uint16,error){r.calls++;return r.port,r.err}
 
 func setup(t *testing.T)(*Manager,*fakeCluster,*fakeTilt,*fakePorts,*fakeRegistries,string){
-	t.Helper();t.Setenv("TMPDIR",t.TempDir())
+	t.Helper()
+	tempRoot:=t.TempDir()
+	t.Setenv("TMPDIR",tempRoot)
+	t.Setenv("TMP",tempRoot)
+	t.Setenv("TEMP",tempRoot)
 	e:=&trace{}
 	c:=&fakeCluster{trace:e}
 	tt:=&fakeTilt{trace:e,running:map[string]bool{}}
@@ -86,7 +90,7 @@ func TestStartStopDeleteAndCredentialIsolation(t *testing.T){
 	if tt.configs[0].Directory!=def.Directory||tt.configs[0].ClusterName!=def.Cluster.Name{t.Fatalf("Tilt config %+v",tt.configs[0])}
 	path:=tt.configs[0].Kubeconfig
 	stat,err:=os.Stat(path);if err!=nil{t.Fatal(err)}
-	if stat.Mode().Perm()!=0600{t.Fatalf("kubeconfig permissions: %o",stat.Mode().Perm())}
+	if err:=requirePrivateFile(path,stat);err!=nil{t.Fatalf("kubeconfig is not private: %v",err)}
 	data,err:=os.ReadFile(path);if err!=nil||!strings.Contains(string(data),"private"){t.Fatalf("kubeconfig read: %v",err)}
 	res,err:=m.Resources(ctx,def.ID)
 	if err!=nil||!reflect.DeepEqual(res,[]tilt.Resource{{Name:"api",RuntimeStatus:"ok"}}){t.Fatalf("resources: %+v %v",res,err)}
