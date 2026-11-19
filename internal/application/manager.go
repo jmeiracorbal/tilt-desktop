@@ -50,6 +50,7 @@ type State struct {
 	Directory string
 	ClusterName string
 	Registered bool
+	Phase string
 	Running bool
 	TiltPort uint16
 	RegistryPort uint16
