@@ -138,7 +138,7 @@ func (m *PersistentManager) Start(ctx context.Context,id string)error{
 	a.mu.Unlock()
 	record:=catalogRecord{ID:id,Directory:rec.Directory,ClusterName:rec.ClusterName,
 		RegistryPort:spec.RegistryPort,TiltPort:config.Port,Kubeconfig:config.Kubeconfig,
-		Phase:phaseRunning,PID:status.PID}
+		Phase:phaseRunning,PID:int64(status.PID)}
 	if err:=m.store.upsert(record);err!=nil{return fmt.Errorf("record running Tilt session: %w",err)}
 	return nil
 }
