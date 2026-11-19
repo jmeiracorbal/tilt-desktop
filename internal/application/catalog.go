@@ -32,6 +32,7 @@ type catalogRecord struct {
 	TiltPort     uint16 `json:"tiltPort,omitempty"`
 	Kubeconfig   string `json:"kubeconfig,omitempty"`
 	Phase        phase  `json:"phase"`
+	PID          int64  `json:"pid,omitempty"`
 }
 
 type catalogFile struct {
