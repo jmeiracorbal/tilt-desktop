@@ -33,6 +33,7 @@ func (p *fakeProcess) Interrupt() error {
 	p.once.Do(func() { close(p.done) })
 	return nil
 }
+func (p *fakeProcess) PID() int { return 321 }
 func (p *fakeProcess) Wait() error { <-p.done; return p.waitErr }
 func (p *fakeProcess) finish()     { p.once.Do(func() { close(p.done) }) }
 
