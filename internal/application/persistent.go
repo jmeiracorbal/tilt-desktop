@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/jmeiracorbal/tilt-desktop/internal/k3d"
 	"github.com/jmeiracorbal/tilt-desktop/internal/project"
@@ -331,4 +330,3 @@ func (m *PersistentManager) Logs(ctx context.Context,id,resource string,tail int
 	return m.core.Logs(ctx,id,resource,tail)
 }
 
-var _ = time.Second
