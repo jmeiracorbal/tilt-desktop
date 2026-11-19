@@ -20,7 +20,7 @@ func TestInspectVerifiedSession(t *testing.T) {
 	if got.PID!=412||got.TiltfilePath!=filepath.Join(c.Directory,"Tiltfile")||got.StartTime==""{
 		t.Fatalf("invalid inspected identity %+v",got)
 	}
-	if len(l.runs)!=1||strings.Join(l.runs[0]," ")!="get session -o json --host 127.0.0.1 --port 10351"{
+	if len(l.runs)!=1||strings.Join(l.runs[0]," ")!="get session Tiltfile -o json --host 127.0.0.1 --port 10351"{
 		t.Fatalf("wrong session request: %v",l.runs)
 	}
 }
