@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 )
 
@@ -93,12 +92,10 @@ func validateRecord(record catalogRecord) error {
 	if record.ID==""||record.ClusterName!=record.ID||!filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid catalog entry %q",record.ID)
 	}
-	if _,err:=definitionFor(record.ID,record.Directory);err!=nil {
-		// The application folder can disappear after registration. Its
-		// identity is still checked without requiring the Tiltfile to exist.
-		if !strings.HasPrefix(record.ID,"td-")||len(record.ID)!=23 {
-			return fmt.Errorf("invalid catalog identity %q",record.ID)
-		}
+	// Validate a canonical absolute identity without depending on a currently
+	// accessible project directory, which may have moved or been deleted.
+	if filepath.Clean(record.Directory)!=record.Directory||projectID(record.Directory)!=record.ID {
+		return fmt.Errorf("invalid catalog identity %q",record.ID)
 	}
 	if record.Phase!=phaseIdle&&record.Phase!=phaseStarting&&record.Phase!=phaseRunning&&record.Phase!=phaseOrphaned&&record.Phase!=phaseUnknown {
 		return fmt.Errorf("invalid catalog phase %q",record.Phase)
