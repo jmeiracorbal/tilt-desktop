@@ -27,7 +27,8 @@ func TestCatalogSurvivesReopen(t *testing.T){
 	var doc catalogFile
 	if err:=json.Unmarshal(data,&doc);err!=nil||doc.Version!=1||len(doc.Records)!=1{t.Fatalf("catalog %s: %v",data,err)}
 	info,err:=os.Stat(path)
-	if err!=nil||info.Mode().Perm()!=0600{t.Fatalf("catalog permissions %v %v",info,err)}
+	if err!=nil{t.Fatal(err)}
+	if err:=requirePrivateFile(path,info);err!=nil{t.Fatalf("catalog is not private: %v",err)}
 	second,err:=openCatalog(path)
 	if err!=nil{t.Fatal(err)}
 	got:=second.all()
@@ -59,7 +60,7 @@ func TestCatalogRejectsWorldReadableFileAndSymlink(t *testing.T){
 	root:=t.TempDir()
 	path:=filepath.Join(root,"catalog.json")
 	if err:=os.WriteFile(path,[]byte(`{"version":1,"records":[]}`),0644);err!=nil{t.Fatal(err)}
-	if err:=os.Chmod(path,0644);err!=nil{t.Fatal(err)}
+	if err:=makeInsecureFileForTest(path);err!=nil{t.Fatal(err)}
 	if _,err:=openCatalog(path);err==nil{t.Fatal("accepted world-readable catalog")}
 	if err:=os.Remove(path);err!=nil{t.Fatal(err)}
 	if err:=os.WriteFile(path+".target",[]byte(`{"version":1,"records":[]}`),0600);err!=nil{t.Fatal(err)}

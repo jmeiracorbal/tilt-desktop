@@ -163,6 +163,11 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 	file,err:=os.CreateTemp("","tilt-desktop-kubeconfig-*")
 	if err!=nil{return m.rollback(spec,existed,fmt.Errorf("create private kubeconfig: %w",err))}
 	path:=file.Name()
+	if err:=protectPrivateFile(path);err!=nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return m.rollback(spec,existed,fmt.Errorf("protect private kubeconfig: %w",err))
+	}
 	if _,err:=file.Write(credentials);err!=nil {
 		_ = file.Close()
 		_ = os.Remove(path)

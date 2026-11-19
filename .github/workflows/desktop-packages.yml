@@ -1,0 +1,97 @@
+name: Desktop packages
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+            goos: linux
+            archive: TiltDesktop-linux-amd64.tar.xz
+          - target: macos-arm64
+            runner: macos-15
+            goos: darwin
+            archive: TiltDesktop-macos-arm64.zip
+          - target: macos-amd64
+            runner: macos-15-intel
+            goos: darwin
+            archive: TiltDesktop-macos-amd64.zip
+          - target: windows-amd64
+            runner: windows-2025
+            goos: windows
+            archive: TiltDesktop-windows-amd64.zip
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Native Linux graphical build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgl1-mesa-dev libegl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev wayland-protocols libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
+
+      - name: Configure Windows C compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Verify Go source and dependencies
+        run: go test -tags ci -count=1 ./...
+
+      - name: Install pinned Fyne packaging tool
+        run: go install fyne.io/tools/cmd/fyne@v1.7.4
+
+      - name: Add Fyne tool to PATH on Unix
+        if: runner.os != 'Windows'
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Add Fyne tool to PATH on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"$(go env GOPATH)\bin" >> $env:GITHUB_PATH'
+
+      - name: Native desktop packaging
+        run: fyne package -os ${{ matrix.goos }} -src ./cmd/tilt-desktop -name TiltDesktop -app-id dev.tilt-desktop
+
+      - name: Archive Linux desktop package
+        if: runner.os == 'Linux'
+        run: mv TiltDesktop.tar.xz ${{ matrix.archive }}
+
+      - name: Archive macOS app bundle
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent TiltDesktop.app ${{ matrix.archive }}
+
+      - name: Archive Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path cmd/tilt-desktop/TiltDesktop.exe -DestinationPath ${{ matrix.archive }}
+
+      - name: Upload native desktop package
+        uses: actions/upload-artifact@v4
+        with:
+          name: tilt-desktop-${{ matrix.target }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,14 @@
+[Details]
+Name = "Tilt Desktop"
+ID = "dev.tilt-desktop"
+Version = "0.1.0"
+Build = 1
+
+[LinuxAndBSD]
+GenericName = "Local Kubernetes development environment"
+Categories = ["Development"]
+Comment = "Manage local Tilt applications and dedicated k3d clusters."
+Keywords = ["tilt", "kubernetes", "k3d", "development"]
+
+[Migrations]
+fyneDo = true
