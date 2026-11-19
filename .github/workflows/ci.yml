@@ -33,7 +33,7 @@ jobs:
         run: go build -o /tmp/tilt-desktop ./cmd/tilt-desktop
       - name: Smoke test desktop with a virtual display
         run: |
-          if timeout --signal=TERM 8s xvfb-run -a /tmp/tilt-desktop; then
+          if xvfb-run -a timeout --signal=TERM 8s /tmp/tilt-desktop; then
             echo "Desktop exited unexpectedly before the smoke-test timeout."
             exit 1
           else
