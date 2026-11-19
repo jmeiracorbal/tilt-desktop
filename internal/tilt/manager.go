@@ -71,6 +71,7 @@ func (c Config) tiltfile() string    { return filepath.Join(c.Directory, "Tiltfi
 
 // Process represents one child process started by Tilt Desktop.
 type Process interface {
+	PID() int
 	Interrupt() error
 	Wait() error
 }
@@ -105,6 +106,7 @@ type resourceList struct {
 // Started does not imply Tilt completed initialization or workloads are ready.
 type State struct {
 	Running bool
+	PID int
 	ExitErr error
 }
 
@@ -217,7 +219,7 @@ func (m *Manager) Status(projectID string) (State, error) {
 	if !exists {
 		return State{}, fmt.Errorf("%w: %s", ErrNotFound, projectID)
 	}
-	return State{Running: s.running, ExitErr: s.exitErr}, nil
+	return State{Running: s.running, PID: s.process.PID(), ExitErr: s.exitErr}, nil
 }
 
 func (m *Manager) activeConfig(projectID string) (Config, error) {
