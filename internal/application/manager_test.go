@@ -40,7 +40,7 @@ type fakeTilt struct{
 }
 func (f *fakeTilt)Start(_ context.Context,c tilt.Config)error{f.trace.add("tilt.start");if f.startErr!=nil{return f.startErr};f.mu.Lock();defer f.mu.Unlock();f.configs=append(f.configs,c);f.running[c.ProjectID]=true;return nil}
 func (f *fakeTilt)Stop(_ context.Context,id string)error{f.trace.add("tilt.stop");if f.stopErr!=nil{return f.stopErr};f.mu.Lock();defer f.mu.Unlock();f.running[id]=false;return nil}
-func (f *fakeTilt)Status(id string)(tilt.State,error){f.mu.Lock();defer f.mu.Unlock();return tilt.State{Running:f.running[id]},nil}
+func (f *fakeTilt)Status(id string)(tilt.State,error){f.mu.Lock();defer f.mu.Unlock();if f.running[id] {return tilt.State{Running:true,PID:os.Getpid()},nil};return tilt.State{Running:false},nil}
 func (f *fakeTilt)Resources(_ context.Context,_ string)([]tilt.Resource,error){return []tilt.Resource{{Name:"api",RuntimeStatus:"ok"}},nil}
 func (f *fakeTilt)Logs(_ context.Context,_,_ string,_ int)([]byte,error){return []byte("started\n"),nil}
 
