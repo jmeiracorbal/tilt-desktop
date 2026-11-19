@@ -34,7 +34,7 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	if err!=nil{t.Fatal(err)}
 	tiltManager,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{t.Fatal(err)}
-	manager,err:=application.NewManager(client,tiltManager,application.NetPorts{},k3d.DockerInspector{Binary:"docker"})
+	manager,err:=application.NewManager(client,tiltManager,application.NetPorts{},client)
 	if err!=nil{t.Fatal(err)}
 	projectDir:=filepath.Join(root,"app")
 	if err:=os.Mkdir(projectDir,0700);err!=nil{t.Fatal(err)}
@@ -89,20 +89,12 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	// It must rediscover the existing cluster and its real registry port.
 	secondTilt,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{t.Fatal(err)}
-	second,err:=application.NewManager(client,secondTilt,application.NetPorts{},k3d.DockerInspector{Binary:"docker"})
+	second,err:=application.NewManager(client,secondTilt,application.NetPorts{},client)
 	if err!=nil{t.Fatal(err)}
 	reopened,err:=second.Register(projectDir)
 	if err!=nil||reopened.ID!=def.ID{t.Fatalf("re-register after restart: %+v %v",reopened,err)}
 	t.Log("restarting application and recovering the existing dedicated cluster")
-	if err:=second.Start(ctx,def.ID);err!=nil{
-        if out,diagErr:=exec.CommandContext(ctx,"k3d","registry","list","--output","json").CombinedOutput();diagErr==nil{
-            t.Logf("k3d registries: %s",out)
-        } else {t.Logf("k3d registry list: %v %s",diagErr,out)}
-        if out,diagErr:=exec.CommandContext(ctx,"docker","container","ls","-a","--format","{{.Names}}").CombinedOutput();diagErr==nil{
-            t.Logf("Docker container names: %s",out)
-        } else {t.Logf("docker container list: %v %s",diagErr,out)}
-        t.Fatalf("recover existing cluster: %v",err)
-    }
+	if err:=second.Start(ctx,def.ID);err!=nil{t.Fatalf("recover existing cluster: %v",err)}
 	state,err=second.Status(def.ID)
 	if err!=nil||!state.Running{t.Fatalf("restarted status: %+v %v",state,err)}
 	saveKubeconfig()
