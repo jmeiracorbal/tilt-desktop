@@ -3,8 +3,17 @@ package application
 import (
     "fmt"
     "net"
+    "strconv"
     "time"
 )
+
+// loopbackPortFree checks a previously assigned port before reusing it.
+// The socket is released before Tilt binds; cross-process reservation is not yet implemented.
+func loopbackPortFree(port uint16) bool {
+    l,err:=net.Listen("tcp4",net.JoinHostPort("127.0.0.1",strconv.Itoa(int(port))))
+    if err!=nil{return false}
+    return l.Close()==nil
+}
 
 const cleanupTimeout = 90 * time.Second
 
