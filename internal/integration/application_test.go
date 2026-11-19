@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -41,18 +40,11 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	if err:=os.Mkdir(projectDir,0700);err!=nil{t.Fatal(err)}
 	const manifest="apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: tilt-desktop-app-manager\ndata:\n  value: managed\n"
 	if err:=os.WriteFile(filepath.Join(projectDir,"configmap.yaml"),[]byte(manifest),0600);err!=nil{t.Fatal(err)}
-	// The Tiltfile does not name a user-selected cluster. Its development
-	// context is derived from the deterministic folder identity.
+	// The project Tiltfile is independent of the name of its future k3d
+	// cluster. The manager supplies the isolated context automatically.
+	if err:=os.WriteFile(filepath.Join(projectDir,"Tiltfile"),[]byte("k8s_yaml('configmap.yaml')\n"),0600);err!=nil{t.Fatal(err)}
 	def,err:=manager.Register(projectDir)
-	if err==nil{t.Fatal("expected registration to reject a missing Tiltfile")}
-	// Prepare the project against its canonical, stable cluster identity.
-	// The ID is derived from the path before a user knows the cluster name.
-	identifier:=application.ProjectID(projectDir)
-	tiltfile:="allow_k8s_contexts('k3d-"+identifier+"')\nk8s_yaml('configmap.yaml')\n"
-	if err:=os.WriteFile(filepath.Join(projectDir,"Tiltfile"),[]byte(tiltfile),0600);err!=nil{t.Fatal(err)}
-	def,err=manager.Register(projectDir)
 	if err!=nil{t.Fatal(err)}
-	if def.ID!=identifier {t.Fatalf("deterministic identity mismatch %q %q",def.ID,identifier)}
 	t.Cleanup(func(){
 		clean,done:=context.WithTimeout(context.Background(),90*time.Second)
 		defer done()
