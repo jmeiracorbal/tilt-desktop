@@ -77,5 +77,5 @@ func TestCatalogValidation(t *testing.T){
 	r=sampleCatalogRecord(t)
 	r.Phase=phaseRunning
 	if err:=store.upsert(r);err==nil{t.Fatal("accepted running state without process metadata")}
-	if _,err:=store.remove("not-found");!errors.Is(err,ErrNotRegistered){t.Fatalf("unexpected missing entry error: %v",err)}
+	if err:=store.remove("not-found");!errors.Is(err,ErrNotRegistered){t.Fatalf("unexpected missing entry error: %v",err)}
 }
