@@ -13,6 +13,7 @@ Tilt Desktop is a local Kubernetes development-environment manager built in Go. 
 
 - `internal/project`: validates application IDs, project directories, Tiltfiles, and dedicated/shared cluster assignments.
 - `internal/desktop` and `cmd/tilt-desktop`: native Fyne application with a project catalog, folder picker, explicit start/stop/delete actions, resource and log views, safe-state handling and background lifecycle calls.
+- The persistent catalog and kubeconfig files use POSIX file permissions on Linux/macOS and explicit user-restricted Windows ACLs. Process reconciliation uses OS-native read-only liveness checks.
 - `internal/application`: persists a versioned project catalog under the user's config directory, derives a stable dedicated-cluster identity, and coordinates cluster creation/reuse, private kubeconfig materialization, Tilt startup, status, resources, logs, stop and confirmed deletion. New registrations do not require developers to pre-create a cluster or edit the Tiltfile.
 - `internal/tilt`: starts and supervises independent Tilt processes for project/k3d-cluster pairs with explicit private kubeconfig and bound localhost port; reads UIResource snapshots and bounded log output using the Tilt CLI.
 - Tilt child processes are stopped by interrupting the process, not by running `tilt down`. Unexpected process exits are exposed through session status.
@@ -40,7 +41,20 @@ Use **Add project** to register a directory containing a Tiltfile. Each project 
 
 Long-running operations execute off the GUI thread. **Refresh** reconciles the persisted catalog against observable Tilt sessions. Unverified, orphaned or starting sessions block destructive operations. Closing the window while managed sessions are running asks whether to stop them first; it does not run `tilt down`.
 
-This is the first native desktop increment, tested headlessly and built on Linux CI. It is not yet a packaged macOS, Linux or Windows release.
+### Native build artifacts
+
+The `Desktop packages` GitHub Actions workflow creates native test packages using the pinned Fyne CLI and the Go module lockfile:
+
+| Target | CI artifact | Contents |
+| --- | --- | --- |
+| Linux x86-64 | `tilt-desktop-linux-amd64` | `TiltDesktop-linux-amd64.tar.xz` (Fyne desktop archive) |
+| macOS Apple Silicon | `tilt-desktop-macos-arm64` | `TiltDesktop-macos-arm64.zip` containing `TiltDesktop.app` |
+| macOS Intel | `tilt-desktop-macos-amd64` | `TiltDesktop-macos-amd64.zip` containing `TiltDesktop.app` |
+| Windows x86-64 | `tilt-desktop-windows-amd64` | `TiltDesktop-windows-amd64.zip` containing the native `.exe` |
+
+Open the `Desktop packages` run under GitHub Actions to access its retained artifacts. These are **unsigned, unnotarized CI builds**, not public installers or a supported end-user release. macOS Gatekeeper and Windows SmartScreen may restrict their use. There is no automatic release publishing.
+
+Creating and running application environments still requires Docker, k3d and Tilt installed separately. Packaging the desktop does not bundle or install these tools. CI verifies the native build on each target; runtime integration with Docker/k3d/Tilt remains exercised on Linux only. Native GUI behavior on macOS and Windows has not been validated end-to-end.
 
 ## Application manager
 
