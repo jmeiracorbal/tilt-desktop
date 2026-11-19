@@ -23,7 +23,7 @@ func (m *Manager) Inspect(ctx context.Context, config Config) (Session, error) {
 	if config.Port==0||!filepath.IsAbs(config.Directory) {
 		return Session{},errors.New("absolute project path and a Tilt HTTP port are required")
 	}
-	out,err:=m.launcher.Run(ctx,config,"get","session","-o","json","--host","127.0.0.1","--port",strconv.Itoa(int(config.Port)))
+	out,err:=m.launcher.Run(ctx,config,"get","session","Tiltfile","-o","json","--host","127.0.0.1","--port",strconv.Itoa(int(config.Port)))
 	if err!=nil{return Session{},fmt.Errorf("inspect Tilt session on port %d: %w",config.Port,err)}
 	var response struct {
 		Kind string `json:"kind"`
