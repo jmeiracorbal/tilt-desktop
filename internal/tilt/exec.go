@@ -100,6 +100,7 @@ type execProcess struct {
 	stderr *tailBuffer
 }
 
+func (p *execProcess) PID() int { return p.cmd.Process.Pid }
 func (p *execProcess) Interrupt() error { return p.cmd.Process.Signal(os.Interrupt) }
 func (p *execProcess) Wait() error {
 	if err := p.cmd.Wait(); err != nil {
