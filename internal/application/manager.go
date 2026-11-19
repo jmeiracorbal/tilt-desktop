@@ -4,8 +4,6 @@ package application
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -76,6 +74,7 @@ type Manager struct {
 	ports Ports
 	registries Registries
 	apps map[string]*entry
+	beforeTiltStart func(k3d.Spec, tilt.Config) error
 }
 
 func NewManager(clusters Clusters, tiltManager Tilt, ports Ports, registries Registries) (*Manager,error) {
@@ -83,15 +82,6 @@ func NewManager(clusters Clusters, tiltManager Tilt, ports Ports, registries Reg
 		return nil,errors.New("cluster manager, Tilt manager, port allocator and registry inspector are required")
 	}
 	return &Manager{clusters:clusters,tilt:tiltManager,ports:ports,registries:registries,apps:make(map[string]*entry)},nil
-}
-
-// NewLocalManager uses the installed k3d, Docker, and Tilt executables.
-func NewLocalManager() (*Manager,error) {
-	clusters,err:=k3d.NewLocalClient()
-	if err!=nil{return nil,err}
-	tiltManager,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
-	if err!=nil{return nil,err}
-	return NewManager(clusters,tiltManager,NetPorts{},clusters)
 }
 
 // Register validates the project's Tiltfile and derives a deterministic
@@ -102,8 +92,7 @@ func (m *Manager) Register(directory string) (project.Definition,error) {
 	if err!=nil{return project.Definition{},fmt.Errorf("resolve project directory: %w",err)}
 	root,err=filepath.EvalSymlinks(root)
 	if err!=nil{return project.Definition{},fmt.Errorf("canonicalize project directory: %w",err)}
-	hash:=sha256.Sum256([]byte(root))
-	id:="td-"+hex.EncodeToString(hash[:10])
+	id:=projectID(root)
 	definition,err:=project.NewDefinition(id,root,project.ClusterAssignment{Mode:project.Dedicated,Name:id})
 	if err!=nil{return project.Definition{},err}
 	m.mu.Lock()
@@ -189,6 +178,12 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 		return m.rollback(spec,existed,fmt.Errorf("allocate Tilt HTTP port: %w",err))
 	}
 	config:=tilt.Config{ProjectID:id,Directory:a.definition.Directory,Kubeconfig:path,ClusterName:spec.Name,Port:port}
+	if m.beforeTiltStart!=nil {
+		if err:=m.beforeTiltStart(spec,config);err!=nil {
+			_ = os.Remove(path)
+			return m.rollback(spec,existed,fmt.Errorf("record Tilt startup: %w",err))
+		}
+	}
 	if err:=m.tilt.Start(ctx,config);err!=nil {
 		removeErr:=os.Remove(path)
 		return errors.Join(m.rollback(spec,existed,fmt.Errorf("start Tilt: %w",err)),removeErr)
