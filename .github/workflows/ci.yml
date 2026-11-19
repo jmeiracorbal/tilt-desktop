@@ -7,7 +7,7 @@ on:
 
 jobs:
   go:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -16,7 +16,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Test
-        run: go test -count=1 ./...
+      - name: Native Fyne build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgl1-mesa-dev xorg-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
+      - name: Resolve desktop dependencies
+        run: |
+          go mod tidy
+          awk '{ print "LOCK_GO_MOD_LINE_" $0 }' go.mod
+          awk '{ print "LOCK_GO_SUM_LINE_" $0 }' go.sum
+      - name: Unit and headless GUI tests
+        run: go test -tags ci -count=1 ./...
       - name: Vet
-        run: go vet ./...
+        run: go vet -tags ci ./...
+      - name: Build native Linux desktop
+        run: go build -o /tmp/tilt-desktop ./cmd/tilt-desktop
