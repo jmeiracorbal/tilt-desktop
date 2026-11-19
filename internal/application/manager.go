@@ -91,7 +91,7 @@ func NewLocalManager() (*Manager,error) {
 	if err!=nil{return nil,err}
 	tiltManager,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{return nil,err}
-	return NewManager(clusters,tiltManager,NetPorts{},k3d.DockerInspector{Binary:"docker"})
+	return NewManager(clusters,tiltManager,NetPorts{},clusters)
 }
 
 // Register validates the project's Tiltfile and derives a deterministic
