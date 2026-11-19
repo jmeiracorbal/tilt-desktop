@@ -73,7 +73,7 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 		if err:=os.WriteFile(configPath,creds,0600);err!=nil{t.Fatal(err)}
 	}
 	saveKubeconfig()
-	if err:=await(ctx,readyTimeout,func(ctx context.Context)error{
+	if err:=await(ctx,45*time.Second,func(ctx context.Context)error{
 		observed,err:=tiltManager.Inspect(ctx,tilt.Config{
 			ProjectID:def.ID,Directory:projectDir,ClusterName:def.ID,
 			Kubeconfig:configPath,Port:state.TiltPort,
