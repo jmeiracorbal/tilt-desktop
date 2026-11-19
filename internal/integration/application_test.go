@@ -94,7 +94,15 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	reopened,err:=second.Register(projectDir)
 	if err!=nil||reopened.ID!=def.ID{t.Fatalf("re-register after restart: %+v %v",reopened,err)}
 	t.Log("restarting application and recovering the existing dedicated cluster")
-	if err:=second.Start(ctx,def.ID);err!=nil{t.Fatalf("recover existing cluster: %v",err)}
+	if err:=second.Start(ctx,def.ID);err!=nil{
+        if out,diagErr:=exec.CommandContext(ctx,"k3d","registry","list","--output","json").CombinedOutput();diagErr==nil{
+            t.Logf("k3d registries: %s",out)
+        } else {t.Logf("k3d registry list: %v %s",diagErr,out)}
+        if out,diagErr:=exec.CommandContext(ctx,"docker","container","ls","-a","--format","{{.Names}}").CombinedOutput();diagErr==nil{
+            t.Logf("Docker container names: %s",out)
+        } else {t.Logf("docker container list: %v %s",diagErr,out)}
+        t.Fatalf("recover existing cluster: %v",err)
+    }
 	state,err=second.Status(def.ID)
 	if err!=nil||!state.Running{t.Fatalf("restarted status: %+v %v",state,err)}
 	saveKubeconfig()
