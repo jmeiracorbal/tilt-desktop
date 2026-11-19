@@ -167,3 +167,23 @@ func TestDependenciesAndNetPorts(t *testing.T){
 	port,err:=(NetPorts{}).Available()
 	if err!=nil||port==0{t.Fatalf("port=%d error=%v",port,err)}
 }
+
+
+func TestDifferentFoldersGetIndependentClusterNamesAndPorts(t *testing.T) {
+	m,c,tiltManager,ports,_,firstDir:=setup(t)
+	secondDir:=t.TempDir()
+	if err:=os.WriteFile(filepath.Join(secondDir,"Tiltfile"),[]byte("# second\n"),0600);err!=nil{t.Fatal(err)}
+	first,err:=m.Register(firstDir);if err!=nil{t.Fatal(err)}
+	second,err:=m.Register(secondDir);if err!=nil{t.Fatal(err)}
+	if first.ID==second.ID || first.Cluster.Name==second.Cluster.Name{t.Fatal("two project folders received the same dedicated cluster")}
+	if err:=m.Start(context.Background(),first.ID);err!=nil{t.Fatal(err)}
+	if err:=m.Start(context.Background(),second.ID);err!=nil{t.Fatal(err)}
+	if len(tiltManager.configs)!=2{t.Fatalf("expected two Tilt processes, got %d",len(tiltManager.configs))}
+	one,two:=tiltManager.configs[0],tiltManager.configs[1]
+	if one.ClusterName==two.ClusterName || one.Port==two.Port || one.Kubeconfig==two.Kubeconfig{
+		t.Fatalf("project session isolation failed: %+v %+v",one,two)
+	}
+	if ports.index!=4 || c.spec.Name!=second.Cluster.Name{t.Fatalf("unexpected cluster or port assignment: %+v, index=%d",c.spec,ports.index)}
+	if err:=m.Stop(context.Background(),first.ID);err!=nil{t.Fatal(err)}
+	if err:=m.Stop(context.Background(),second.ID);err!=nil{t.Fatal(err)}
+}
