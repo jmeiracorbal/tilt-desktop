@@ -18,18 +18,6 @@ func localStateDirectory() (string, error) {
 	return filepath.Join(root, "tilt-desktop"), nil
 }
 
-// AcquireLocalInstance acquires an exclusive, nonblocking OS lock for the
-// desktop's local state directory. The caller must hold it for the entire
-// desktop lifetime and close it only after all state operations have ceased.
-// The lock file is never removed; its stable identity prevents split locks.
-func AcquireLocalInstance() (io.Closer, error) {
-	root, err := localStateDirectory()
-	if err != nil {
-		return nil, err
-	}
-	return acquireInstance(root)
-}
-
 func acquireInstance(root string) (io.Closer, error) {
 	if !filepath.IsAbs(root) {
 		return nil, errors.New("absolute instance state directory is required")
