@@ -76,6 +76,7 @@ type Manager struct {
 	registries Registries
 	apps map[string]*entry
 	beforeTiltStart func(k3d.Spec, tilt.Config) error
+	checkPort func(string,uint16) error
 }
 
 func NewManager(clusters Clusters, tiltManager Tilt, ports Ports, registries Registries) (*Manager,error) {
@@ -154,6 +155,10 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 	}
 	spec,existed,err:=m.clusterSpec(ctx,a)
 	if err!=nil{return err}
+	if m.checkPort!=nil {
+		if err:=m.checkPort(id,spec.RegistryPort);err!=nil{return err}
+		if a.config.Port!=0&&a.config.Port==spec.RegistryPort{return fmt.Errorf("registry and Tilt port collide: %d",spec.RegistryPort)}
+	}
 	if err:=m.clusters.Ensure(ctx,spec);err!=nil{
 		return m.rollback(spec,existed,fmt.Errorf("prepare cluster: %w",err))
 	}
@@ -190,6 +195,13 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 			_ = os.Remove(path)
 			if err==nil {err=errors.New("port allocator returned zero Tilt port")}
 			return m.rollback(spec,existed,fmt.Errorf("allocate Tilt HTTP port: %w",err))
+		}
+	}
+	if m.checkPort!=nil {
+		var conflict error
+		if port==spec.RegistryPort{conflict=fmt.Errorf("registry and Tilt port collide: %d",port)}else{conflict=m.checkPort(id,port)}
+		if conflict!=nil{
+			return errors.Join(m.rollback(spec,existed,conflict),os.Remove(path))
 		}
 	}
 	config:=tilt.Config{ProjectID:id,Directory:a.definition.Directory,Kubeconfig:path,ClusterName:spec.Name,Port:port}
