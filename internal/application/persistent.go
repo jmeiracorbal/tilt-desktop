@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 )
 
 var ErrUnverifiedSession=errors.New("previous Tilt session cannot be safely managed")
+var ErrManagerClosed=errors.New("persistent manager is closed")
 
 // SessionObserver inspects an existing Tilt process without adopting it.
 type SessionObserver interface {
@@ -28,23 +30,29 @@ type PersistentManager struct {
 	core *Manager
 	store *catalogStore
 	observer SessionObserver
+	lock io.Closer
+	closed bool
 }
 
 // NewPersistentManager restores registered projects and their last known
 // sessions. Reconcile must validate previous sessions before they are reused.
 func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registries Registries,observer SessionObserver,path string)(*PersistentManager,error){
 	if observer==nil{return nil,errors.New("Tilt session observer is required")}
+	if !filepath.IsAbs(path){return nil,errors.New("absolute catalog path is required")}
+	lock,err:=acquireInstance(filepath.Dir(path))
+	if err!=nil{return nil,err}
 	store,err:=openCatalog(path)
-	if err!=nil{return nil,err}
+	if err!=nil{return nil,errors.Join(err,lock.Close())}
 	core,err:=NewManager(clusters,tiltManager,ports,registries)
-	if err!=nil{return nil,err}
+	if err!=nil{return nil,errors.Join(err,lock.Close())}
 	for _,rec:=range store.all(){
 		core.apps[rec.ID]=&entry{config:tilt.Config{Port:rec.TiltPort},definition:project.Definition{
 			ID:rec.ID,Directory:rec.Directory,Tiltfile:filepath.Join(rec.Directory,"Tiltfile"),
 			Cluster:project.ClusterAssignment{Mode:project.Dedicated,Name:rec.ClusterName},
 		}}
 	}
-	manager:=&PersistentManager{core:core,store:store,observer:observer}
+	manager:=&PersistentManager{core:core,store:store,observer:observer,lock:lock}
+	core.checkPort=store.checkPort
 	core.beforeTiltStart=func(spec k3d.Spec, config tilt.Config)error{
 		return store.upsert(catalogRecord{
 			ID:config.ProjectID,Directory:config.Directory,ClusterName:spec.Name,
@@ -67,7 +75,18 @@ func NewLocalManager() (*PersistentManager,error){
 	return NewPersistentManager(clusterClient,tiltManager,NetPorts{},clusterClient,tiltManager,path)
 }
 
+// Close relinquishes the catalog without adopting or terminating child processes.
+// The caller must stop owned sessions first for a graceful shutdown.
+func (m *PersistentManager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed{return nil}
+	m.closed=true
+	return m.lock.Close()
+}
+
 func (m *PersistentManager) record(id string)(catalogRecord,error){
+	if m.closed{return catalogRecord{},ErrManagerClosed}
 	for _,rec:=range m.store.all(){
 		if rec.ID==id{return rec,nil}
 	}
@@ -79,6 +98,7 @@ func (m *PersistentManager) record(id string)(catalogRecord,error){
 func (m *PersistentManager) Register(directory string)(project.Definition,error){
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed{return project.Definition{},ErrManagerClosed}
 	def,err:=m.core.Register(directory)
 	if err!=nil{return def,err}
 	if _,err:=m.record(def.ID);err==nil{return def,nil}
@@ -93,6 +113,7 @@ func (m *PersistentManager) Register(directory string)(project.Definition,error)
 func (m *PersistentManager) List() []State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed{return nil}
 	records:=m.store.all()
 	result:=make([]State,0,len(records))
 	for _,r:=range records{
@@ -229,9 +250,12 @@ func (m *PersistentManager) Reconcile(ctx context.Context,id string)(State,error
 // ReconcileAll is explicit so callers can choose when to perform external
 // probes. A failed probe does not reset the session to an unsafe idle state.
 func (m *PersistentManager) ReconcileAll(ctx context.Context)error{
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed{return ErrManagerClosed}
 	var errs []error
-	for _,entry:=range m.List(){
-		if _,err:=m.Reconcile(ctx,entry.ProjectID);err!=nil{errs=append(errs,fmt.Errorf("%s: %w",entry.ProjectID,err))}
+	for _,rec:=range m.store.all(){
+		if err:=m.reconcile(ctx,&rec);err!=nil{errs=append(errs,fmt.Errorf("%s: %w",rec.ID,err))}
 	}
 	return errors.Join(errs...)
 }
@@ -268,6 +292,10 @@ func (m *PersistentManager) Status(id string)(State,error){
 func (m *PersistentManager) Stop(ctx context.Context,id string)error{
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.stop(ctx,id)
+}
+
+func (m *PersistentManager) stop(ctx context.Context,id string)error{
 	rec,err:=m.record(id)
 	if err!=nil{return err}
 	if rec.Phase!=phaseIdle{
@@ -296,17 +324,23 @@ func (m *PersistentManager) Stop(ctx context.Context,id string)error{
 // Delete refuses unresolved sessions, and requires explicit confirmation.
 func (m *PersistentManager) Delete(ctx context.Context,id string,confirmed bool)error{
 	if !confirmed{return ErrConfirmationRequired}
-	if err:=m.Stop(ctx,id);err!=nil{return err}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err:=m.stop(ctx,id);err!=nil{return err}
 	if err:=m.core.Delete(ctx,id,true);err!=nil{return err}
 	return m.store.remove(id)
 }
 
 func (m *PersistentManager) Resources(ctx context.Context,id string)([]tilt.Resource,error){
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed{return nil,ErrManagerClosed}
 	return m.core.Resources(ctx,id)
 }
 func (m *PersistentManager) Logs(ctx context.Context,id,resource string,tail int)([]byte,error){
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed{return nil,ErrManagerClosed}
 	return m.core.Logs(ctx,id,resource,tail)
 }
 
