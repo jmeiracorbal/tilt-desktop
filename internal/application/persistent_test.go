@@ -29,6 +29,7 @@ func persistentFixture(t *testing.T)(*PersistentManager,*fakeCluster,*fakeTilt,*
 	path:=filepath.Join(t.TempDir(),"state","catalog.json")
 	m,err:=NewPersistentManager(c,tm,p,r,observer,path)
 	if err!=nil{t.Fatal(err)}
+	t.Cleanup(func(){if err:=m.Close();err!=nil{t.Error(err)}})
 	return m,c,tm,p,r,observer,dir,path
 }
 
@@ -45,8 +46,10 @@ func TestPersistentRegistrationAndStopSurviveRestart(t *testing.T){
 		t.Fatalf("running state %+v %v",state,err)
 	}
 	if err:=m.Stop(context.Background(),def.ID);err!=nil{t.Fatal(err)}
+	if err:=m.Close();err!=nil{t.Fatal(err)}
 	reloaded,err:=NewPersistentManager(c,tm,p,r,observer,path)
 	if err!=nil{t.Fatal(err)}
+	t.Cleanup(func(){if err:=reloaded.Close();err!=nil{t.Error(err)}})
 	list:=reloaded.List()
 	if len(list)!=1||list[0].Phase!="idle"||list[0].ProjectID!=def.ID {
 		t.Fatalf("reloaded records %+v",list)
@@ -59,6 +62,7 @@ func TestPersistentRegistrationAndStopSurviveRestart(t *testing.T){
 	if err:=reloaded.Stop(context.Background(),def.ID);err!=nil{t.Fatal(err)}
 	if err:=reloaded.Delete(context.Background(),def.ID,false);!errors.Is(err,ErrConfirmationRequired){t.Fatalf("delete without confirmation: %v",err)}
 	if err:=reloaded.Delete(context.Background(),def.ID,true);err!=nil{t.Fatal(err)}
+	if err:=reloaded.Close();err!=nil{t.Fatal(err)}
 	last,err:=openCatalog(path)
 	if err!=nil||len(last.all())!=0{t.Fatalf("catalog deletion not durable: %+v %v",last,err)}
 }
@@ -73,15 +77,19 @@ func TestPersistentOrphanCannotBeStartedOrDeleted(t *testing.T){
 	}
 	observer.session=tilt.Session{PID:rec.PID,StartTime:"2026-11-19T03:00:00Z",TiltfilePath:filepath.Join(dir,"Tiltfile")}
 	observer.err=nil
+	if err:=m.Close();err!=nil{t.Fatal(err)}
 	second,err:=NewPersistentManager(c,tm,p,r,observer,path)
 	if err!=nil{t.Fatal(err)}
+	t.Cleanup(func(){if err:=second.Close();err!=nil{t.Error(err)}})
 	state,err:=second.Reconcile(context.Background(),def.ID)
 	if err!=nil||state.Phase!="orphaned"||!state.Running {t.Fatalf("unrecognized orphan: %+v %v",state,err)}
 	if err:=second.Start(context.Background(),def.ID);!errors.Is(err,ErrUnverifiedSession){t.Fatalf("duplicate Tilt permitted: %v",err)}
 	if err:=second.Stop(context.Background(),def.ID);!errors.Is(err,ErrUnverifiedSession){t.Fatalf("orphan stop permitted: %v",err)}
 	if err:=second.Delete(context.Background(),def.ID,true);!errors.Is(err,ErrUnverifiedSession){t.Fatalf("orphan deletion permitted: %v",err)}
 	if !c.exists {t.Fatal("orphan caused cluster deletion")}
-	if err:=m.Stop(context.Background(),def.ID);err!=nil{t.Fatal(err)}
+	// Simulate the original desktop disappearing without stopping its child.
+	if err:=tm.Stop(context.Background(),def.ID);err!=nil{t.Fatal(err)}
+	if err:=os.Remove(rec.Kubeconfig);err!=nil{t.Fatal(err)}
 }
 
 func TestRecoverDefinitelyExitedProcess(t *testing.T){
@@ -141,12 +149,46 @@ func TestPersistedTiltPortConflictStopsBeforeProcessLaunch(t *testing.T){
 	rec,err:=m.record(def.ID);if err!=nil{t.Fatal(err)}
 	rec.TiltPort=taken
 	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
+	if err:=m.Close();err!=nil{t.Fatal(err)}
 	restored,err:=NewPersistentManager(c,tm,p,r,observer,path)
 	if err!=nil{t.Fatal(err)}
+	t.Cleanup(func(){if err:=restored.Close();err!=nil{t.Error(err)}})
 	err=restored.Start(context.Background(),def.ID)
 	if err==nil||!strings.Contains(err.Error(),"unavailable"){
 		t.Fatalf("accepted port occupied by another service: %v",err)
 	}
 	if len(tm.configs)!=0{t.Fatal("Tilt launched despite occupied port")}
 	if c.exists{t.Fatal("new cluster was not rolled back")}
+}
+
+func TestPersistentManagerExclusiveOwnership(t *testing.T) {
+	m,c,tm,p,r,observer,dir,path:=persistentFixture(t)
+	def,err:=m.Register(dir)
+	if err!=nil{t.Fatal(err)}
+	other,err:=NewPersistentManager(c,tm,p,r,observer,path)
+	if other!=nil{_ = other.Close()}
+	if !errors.Is(err,ErrInstanceRunning){t.Fatalf("expected exclusive ownership, got %v",err)}
+	if err:=m.Close();err!=nil{t.Fatal(err)}
+	if _,err:=m.Register(dir);!errors.Is(err,ErrManagerClosed){t.Fatalf("closed manager register: %v",err)}
+	if err:=m.Start(context.Background(),def.ID);!errors.Is(err,ErrManagerClosed){t.Fatalf("closed manager start: %v",err)}
+	other,err=NewPersistentManager(c,tm,p,r,observer,path)
+	if err!=nil{t.Fatal(err)}
+	defer other.Close()
+	if got:=other.List();len(got)!=1||got[0].ProjectID!=def.ID{t.Fatalf("catalog not preserved: %+v",got)}
+}
+
+func TestPersistentPortConflictRejectsRegistryBeforeCreation(t *testing.T) {
+	m,c,tm,p,_,_,dir,_:=persistentFixture(t)
+	first,err:=m.Register(dir)
+	if err!=nil{t.Fatal(err)}
+	secondDir:=t.TempDir()
+	if err:=os.WriteFile(filepath.Join(secondDir,"Tiltfile"),[]byte("# test\n"),0600);err!=nil{t.Fatal(err)}
+	second,err:=m.Register(secondDir)
+	if err!=nil{t.Fatal(err)}
+	rec,err:=m.record(first.ID)
+	if err!=nil{t.Fatal(err)}
+	rec.TiltPort=p.values[0]
+	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
+	if err:=m.Start(context.Background(),second.ID);err==nil||!strings.Contains(err.Error(),"assigned to project"){t.Fatalf("expected reserved port conflict, got %v",err)}
+	if c.exists||len(tm.configs)!=0{t.Fatal("conflict created external resources")}
 }
