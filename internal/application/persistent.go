@@ -61,9 +61,9 @@ func NewLocalManager() (*PersistentManager,error){
 	if err!=nil{return nil,err}
 	tiltManager,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{return nil,err}
-	root,err:=os.UserConfigDir()
-	if err!=nil{return nil,fmt.Errorf("find user config directory: %w",err)}
-	path:=filepath.Join(root,"tilt-desktop","catalog.json")
+	root,err:=localStateDirectory()
+	if err!=nil{return nil,err}
+	path:=filepath.Join(root,"catalog.json")
 	return NewPersistentManager(clusterClient,tiltManager,NetPorts{},clusterClient,tiltManager,path)
 }
 
