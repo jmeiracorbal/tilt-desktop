@@ -101,9 +101,26 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	});err!=nil{t.Fatalf("Tilt resources unavailable: %v",err)}
 	if _,err:=manager.Logs(ctx,def.ID,"",100);err!=nil{t.Fatalf("Tilt logs: %v",err)}
 	if err:=verifyGlobal(global,marker);err!=nil{t.Fatal(err)}
-	t.Log("stopping application without deleting cluster or workloads")
-	if err:=manager.Stop(ctx,def.ID);err!=nil{t.Fatalf("stop application: %v",err)}
+	t.Log("releasing the original catalog while Tilt remains alive")
 	if err:=manager.Close();err!=nil{t.Fatal(err)}
+	orphanManager,err:=application.NewPersistentManager(client,observerTilt,application.NetPorts{},client,observerTilt,catalogPath)
+	if err!=nil{t.Fatal(err)}
+	defer orphanManager.Close()
+	observedState,err:=orphanManager.Reconcile(ctx,def.ID)
+	if err!=nil||observedState.Phase!="orphaned"{t.Fatalf("unsafe orphan reconciliation: %+v %v",observedState,err)}
+	if err:=orphanManager.Start(ctx,def.ID);!errors.Is(err,application.ErrUnverifiedSession){t.Fatalf("orphan duplicate start: %v",err)}
+	// Only the original supervisor may terminate its child. The new
+	// persistent manager must reconcile its disappearance without adopting it.
+	if err:=tiltManager.Stop(ctx,def.ID);err!=nil{t.Fatalf("stop original Tilt: %v",err)}
+	if err:=await(ctx,45*time.Second,func(ctx context.Context)error{
+		observed,err:=orphanManager.Reconcile(ctx,def.ID)
+		if err!=nil{return err}
+		if observed.Phase!="idle"{return fmt.Errorf("session remains %s",observed.Phase)}
+		return nil
+	});err!=nil{t.Fatalf("recover exited orphan: %v",err)}
+	t.Log("stopping application without deleting cluster or workloads")
+	if err:=orphanManager.Stop(ctx,def.ID);err!=nil{t.Fatalf("stop application: %v",err)}
+	if err:=orphanManager.Close();err!=nil{t.Fatal(err)}
 	// A fresh manager has no prior in-memory registration or port assignment.
 	// It must rediscover the existing cluster and its real registry port.
 	secondTilt,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
