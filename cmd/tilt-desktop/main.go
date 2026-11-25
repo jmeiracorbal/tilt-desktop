@@ -18,16 +18,11 @@ func main() {
 }
 
 func run() (err error) {
-	lock, err := application.AcquireLocalInstance()
-	if err != nil {
-		return fmt.Errorf("initialize Tilt Desktop: %w", err)
-	}
-	defer func() { err = errors.Join(err, lock.Close()) }()
-
 	backend, err := application.NewLocalManager()
 	if err != nil {
 		return fmt.Errorf("initialize Tilt Desktop: %w", err)
 	}
+	defer func() { err = errors.Join(err, backend.Close()) }()
 	gui := app.NewWithID("dev.tilt-desktop")
 	window, err := desktop.NewWindow(gui, backend)
 	if err != nil {
