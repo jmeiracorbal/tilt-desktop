@@ -84,6 +84,7 @@ func openCatalog(path string) (*catalogStore, error) {
 	for _,record:=range file.Records{
 		if err:=validateRecord(record);err!=nil{return nil,err}
 		if _,exists:=store.records[record.ID];exists{return nil,fmt.Errorf("duplicate catalog entry %q",record.ID)}
+		if err:=store.validatePorts(record);err!=nil{return nil,err}
 		store.records[record.ID]=record
 	}
 	return store,nil
@@ -123,10 +124,36 @@ func (s *catalogStore) snapshot() []catalogRecord {
 	return result
 }
 
+// checkPort rejects assignments owned by another project, even when stopped.
+func (s *catalogStore) checkPort(id string, port uint16) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.portConflict(id,port)
+}
+
+func (s *catalogStore) portConflict(id string, port uint16) error {
+	if port==0{return nil}
+	for _,other:=range s.records{
+		if other.ID!=id&&(other.RegistryPort==port||other.TiltPort==port){
+			return fmt.Errorf("port %d is assigned to project %s",port,other.ID)
+		}
+	}
+	return nil
+}
+
+func (s *catalogStore) validatePorts(record catalogRecord) error {
+	if record.RegistryPort!=0&&record.RegistryPort==record.TiltPort{
+		return fmt.Errorf("registry and Tilt port collide: %d",record.RegistryPort)
+	}
+	if err:=s.portConflict(record.ID,record.RegistryPort);err!=nil{return err}
+	return s.portConflict(record.ID,record.TiltPort)
+}
+
 func (s *catalogStore) upsert(record catalogRecord) error {
 	if err:=validateRecord(record);err!=nil{return err}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err:=s.validatePorts(record);err!=nil{return err}
 	previous,exists:=s.records[record.ID]
 	s.records[record.ID]=record
 	if err:=s.flush();err!=nil{
