@@ -309,11 +309,7 @@ func (m *PersistentManager) stop(ctx context.Context,id string)error{
 	if rec.Phase==phaseIdle{
 		// Restored catalog records have no child-process handle; they can
 		// still stop a cluster after ownership checks in k3d.
-		spec,found,err:=m.core.existingSpec(ctx,rec.ClusterName)
-		if err!=nil{return err}
-		if found {
-			if err:=m.core.clusters.Stop(ctx,spec);err!=nil{return err}
-		}
+		if err:=m.core.clusters.stopExisting(ctx,rec.ClusterName);err!=nil{return err}
 	}
 	rec.Phase=phaseIdle
 	rec.PID=0
