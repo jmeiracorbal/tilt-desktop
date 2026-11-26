@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jmeiracorbal/tilt-desktop/internal/environment"
 	"github.com/jmeiracorbal/tilt-desktop/internal/k3d"
 	"github.com/jmeiracorbal/tilt-desktop/internal/project"
 	"github.com/jmeiracorbal/tilt-desktop/internal/tilt"
@@ -23,6 +24,12 @@ type SessionObserver interface {
 	Inspect(context.Context,tilt.Config)(tilt.Session,error)
 }
 
+// EnvironmentRequirements evaluates the external dependencies needed by an
+// operation. Every persistent manager requires an explicit evaluator.
+type EnvironmentRequirements interface {
+	Require(context.Context,environment.Requirement)error
+}
+
 // PersistentManager preserves the project catalog and startup journal.
 // Running Tilt processes remain owned by the manager that spawned them.
 type PersistentManager struct {
@@ -30,13 +37,15 @@ type PersistentManager struct {
 	core *Manager
 	store *catalogStore
 	observer SessionObserver
+	requirements EnvironmentRequirements
 	lock io.Closer
 	closed bool
 }
 
 // NewPersistentManager restores registered projects and their last known
 // sessions. Reconcile must validate previous sessions before they are reused.
-func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registries Registries,observer SessionObserver,path string)(*PersistentManager,error){
+func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registries Registries,observer SessionObserver,requirements EnvironmentRequirements,path string)(*PersistentManager,error){
+	if requirements==nil{return nil,errors.New("environment requirements evaluator is required")}
 	if observer==nil{return nil,errors.New("Tilt session observer is required")}
 	if !filepath.IsAbs(path){return nil,errors.New("absolute catalog path is required")}
 	lock,err:=acquireInstance(filepath.Dir(path))
@@ -51,7 +60,7 @@ func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registr
 			Cluster:project.ClusterAssignment{Mode:rec.Mode,Name:rec.ClusterName},
 		}}
 	}
-	manager:=&PersistentManager{core:core,store:store,observer:observer,lock:lock}
+	manager:=&PersistentManager{core:core,store:store,observer:observer,requirements:requirements,lock:lock}
 	core.checkRegistryPort=store.checkRegistryPort
 	core.checkTiltPort=store.checkTiltPort
 	core.sharedRegistryPort=func(name string)(uint16,error){
@@ -93,7 +102,7 @@ func NewLocalManager() (*PersistentManager,error){
 	root,err:=localStateDirectory()
 	if err!=nil{return nil,err}
 	path:=filepath.Join(root,"catalog.json")
-	return NewPersistentManager(clusterClient,tiltManager,NetPorts{},clusterClient,tiltManager,path)
+	return NewPersistentManager(clusterClient,tiltManager,NetPorts{},clusterClient,tiltManager,environment.NewChecker(),path)
 }
 
 // Close relinquishes the catalog without adopting or terminating child processes.
@@ -173,6 +182,7 @@ func (m *PersistentManager) Start(ctx context.Context,id string)error{
 		}
 	}
 	if err:=projectFolderValid(rec);err!=nil{return err}
+	if err:=m.requirements.Require(ctx,environment.StartProject);err!=nil{return err}
 	if err:=m.core.Start(ctx,id);err!=nil{
 		current,readErr:=m.record(id)
 		if readErr==nil&&current.Phase==phaseStarting{
@@ -341,6 +351,9 @@ func (m *PersistentManager) stop(ctx context.Context,id string)error{
 			if !active{return fmt.Errorf("%w: %s (%s)",ErrUnverifiedSession,id,rec.Phase)}
 		}
 	}
+	if rec.Mode==project.Dedicated{
+		if err:=m.requirements.Require(ctx,environment.ManageCluster);err!=nil{return err}
+	}
 	if err:=m.core.Stop(ctx,id);err!=nil{return err}
 	if rec.Phase==phaseIdle&&rec.Mode==project.Dedicated{
 		// Restored catalog records have no child-process handle; they can
@@ -366,13 +379,15 @@ func (m *PersistentManager) Delete(ctx context.Context,id string,confirmed bool)
 func (m *PersistentManager) Resources(ctx context.Context,id string)([]tilt.Resource,error){
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed{return nil,ErrManagerClosed}
+	if _,err:=m.record(id);err!=nil{return nil,err}
+	if err:=m.requirements.Require(ctx,environment.ObserveTilt);err!=nil{return nil,err}
 	return m.core.Resources(ctx,id)
 }
 func (m *PersistentManager) Logs(ctx context.Context,id,resource string,tail int)([]byte,error){
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed{return nil,ErrManagerClosed}
+	if _,err:=m.record(id);err!=nil{return nil,err}
+	if err:=m.requirements.Require(ctx,environment.ObserveTilt);err!=nil{return nil,err}
 	return m.core.Logs(ctx,id,resource,tail)
 }
 
