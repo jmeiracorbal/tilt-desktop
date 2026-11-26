@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jmeiracorbal/tilt-desktop/internal/application"
+	"github.com/jmeiracorbal/tilt-desktop/internal/environment"
 	"github.com/jmeiracorbal/tilt-desktop/internal/k3d"
 	"github.com/jmeiracorbal/tilt-desktop/internal/tilt"
 )
@@ -36,7 +37,7 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	tiltManager,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{t.Fatal(err)}
 	catalogPath:=filepath.Join(root,"catalog.json")
-	manager,err:=application.NewPersistentManager(client,tiltManager,application.NetPorts{},client,tiltManager,catalogPath)
+	manager,err:=application.NewPersistentManager(client,tiltManager,application.NetPorts{},client,tiltManager,environment.NewChecker(),catalogPath)
 	if err!=nil{t.Fatal(err)}
 	defer manager.Close()
 	projectDir:=filepath.Join(root,"app")
@@ -86,7 +87,7 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	// A live owner prevents a second manager from opening its catalog.
 	observerTilt,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{t.Fatal(err)}
-	observer,err:=application.NewPersistentManager(client,observerTilt,application.NetPorts{},client,observerTilt,catalogPath)
+	observer,err:=application.NewPersistentManager(client,observerTilt,application.NetPorts{},client,observerTilt,environment.NewChecker(),catalogPath)
 	if observer!=nil{_ = observer.Close()}
 	if !errors.Is(err,application.ErrInstanceRunning){t.Fatalf("expected exclusive owner: %v",err)}
 	if err:=await(ctx,readyTimeout,func(ctx context.Context)error{
@@ -103,7 +104,7 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	if err:=verifyGlobal(global,marker);err!=nil{t.Fatal(err)}
 	t.Log("releasing the original catalog while Tilt remains alive")
 	if err:=manager.Close();err!=nil{t.Fatal(err)}
-	orphanManager,err:=application.NewPersistentManager(client,observerTilt,application.NetPorts{},client,observerTilt,catalogPath)
+	orphanManager,err:=application.NewPersistentManager(client,observerTilt,application.NetPorts{},client,observerTilt,environment.NewChecker(),catalogPath)
 	if err!=nil{t.Fatal(err)}
 	defer orphanManager.Close()
 	observedState,err:=orphanManager.Reconcile(ctx,def.ID)
@@ -125,7 +126,7 @@ func TestApplicationManagerLifecycle(t *testing.T) {
 	// It must rediscover the existing cluster and its real registry port.
 	secondTilt,err:=tilt.NewManager(tilt.ExecLauncher{Binary:"tilt"})
 	if err!=nil{t.Fatal(err)}
-	second,err:=application.NewPersistentManager(client,secondTilt,application.NetPorts{},client,secondTilt,catalogPath)
+	second,err:=application.NewPersistentManager(client,secondTilt,application.NetPorts{},client,secondTilt,environment.NewChecker(),catalogPath)
 	if err!=nil{t.Fatal(err)}
 	defer second.Close()
 	entries:=second.List()
