@@ -243,3 +243,30 @@ func TestPersistentConstructorFailureReleasesOwnership(t *testing.T) {
 	if err!=nil{t.Fatalf("constructor leaked ownership: %v",err)}
 	defer recovered.Close()
 }
+
+func TestPersistentSharedAssignmentsDoNotMutateRuntime(t *testing.T) {
+	m,c,tm,ports,registries,observer,dir,path:=persistentFixture(t)
+	if err:=m.Close();err!=nil{t.Fatal(err)}
+	store,err:=openCatalog(path)
+	if err!=nil{t.Fatal(err)}
+	first:=catalogEntry{
+		catalogRecord:catalogRecord{ID:projectID(dir),Directory:dir,ClusterName:"td-shared-development",Phase:phaseIdle},
+		clusterRecord:clusterRecord{Name:"td-shared-development",Mode:project.Shared,RegistryPort:5111},
+	}
+	if err:=store.upsert(first);err!=nil{t.Fatal(err)}
+	reopened,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	if err!=nil{t.Fatal(err)}
+	defer reopened.Close()
+	state,err:=reopened.Status(first.ID)
+	if err!=nil||state.ClusterMode!=project.Shared||state.ClusterName!=first.ClusterName||state.RegistryPort!=5111{
+		t.Fatalf("shared assignment was not restored: %+v %v",state,err)
+	}
+	def,err:=reopened.Register(dir)
+	if err!=nil||def.Cluster.Mode!=project.Shared||def.Cluster.Name!=first.ClusterName{t.Fatalf("registration changed assignment: %+v %v",def,err)}
+	ctx:=context.Background()
+	for _,err:=range []error{reopened.Start(ctx,first.ID),reopened.Stop(ctx,first.ID),reopened.Delete(ctx,first.ID,true)}{
+		if !errors.Is(err,ErrSharedLifecycleUnsupported){t.Fatalf("unexpected shared lifecycle result: %v",err)}
+	}
+	if c.exists||len(tm.configs)!=0{t.Fatal("unsupported lifecycle mutated runtime")}
+	if _,err:=reopened.Status(first.ID);err!=nil{t.Fatal(err)}
+}
