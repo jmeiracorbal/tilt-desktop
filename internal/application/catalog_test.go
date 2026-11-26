@@ -55,6 +55,7 @@ func TestCatalogRejectsCorruptionAndUnsupportedSchema(t *testing.T){
 		`{"version":1,"records":[]} trailing`,
 	}{
 		if err:=os.WriteFile(path,[]byte(payload),0600);err!=nil{t.Fatal(err)}
+		if err:=protectPrivateFile(path);err!=nil{t.Fatal(err)}
 		if _,err:=openCatalog(path);err==nil{t.Fatalf("accepted %q",payload)}
 	}
 }
@@ -114,7 +115,7 @@ func TestCatalogRejectsPersistedPortCollision(t *testing.T) {
 	if err!=nil{t.Fatal(err)}
 	if err:=os.WriteFile(path,payload,0600);err!=nil{t.Fatal(err)}
 	if err:=protectPrivateFile(path);err!=nil{t.Fatal(err)}
-	if _,err:=openCatalog(path);err==nil||!strings.Contains(err.Error(),"assigned to project"){t.Fatalf("expected persisted port conflict, got %v",err)}
+	if _,err:=openCatalog(path);err==nil||!strings.Contains(err.Error(),"is assigned to"){t.Fatalf("expected persisted port conflict, got %v",err)}
 }
 
 func TestCatalogSharedClusterPersistsOnce(t *testing.T) {
