@@ -80,3 +80,36 @@ func TestCatalogValidation(t *testing.T){
 	if err:=store.upsert(r);err==nil{t.Fatal("accepted running state without process metadata")}
 	if err:=store.remove("not-found");!errors.Is(err,ErrNotRegistered){t.Fatalf("unexpected missing entry error: %v",err)}
 }
+
+func TestCatalogRejectsDuplicatePortAssignments(t *testing.T) {
+	first:=sampleCatalogRecord(t)
+	second:=sampleCatalogRecord(t)
+	store,err:=openCatalog(filepath.Join(t.TempDir(),"catalog.json"))
+	if err!=nil{t.Fatal(err)}
+	first.TiltPort=10351
+	first.RegistryPort=5111
+	if err:=store.upsert(first);err!=nil{t.Fatal(err)}
+	second.RegistryPort=first.TiltPort
+	if err:=store.upsert(second);err==nil{t.Fatal("accepted cross-role port collision")}
+	second.RegistryPort=10352
+	second.TiltPort=10352
+	if err:=store.upsert(second);err==nil{t.Fatal("accepted same-project port collision")}
+	second.TiltPort=10353
+	if err:=store.upsert(second);err!=nil{t.Fatal(err)}
+	if err:=store.remove(first.ID);err!=nil{t.Fatal(err)}
+	second.RegistryPort=first.TiltPort
+	if err:=store.upsert(second);err!=nil{t.Fatalf("deleted assignment not released: %v",err)}
+}
+
+func TestCatalogRejectsPersistedPortCollision(t *testing.T) {
+	first:=sampleCatalogRecord(t)
+	second:=sampleCatalogRecord(t)
+	first.TiltPort=10351
+	second.RegistryPort=10351
+	path:=filepath.Join(t.TempDir(),"catalog.json")
+	payload,err:=json.Marshal(catalogFile{Version:catalogVersion,Records:[]catalogRecord{first,second}})
+	if err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(path,payload,0600);err!=nil{t.Fatal(err)}
+	if err:=protectPrivateFile(path);err!=nil{t.Fatal(err)}
+	if _,err:=openCatalog(path);err==nil||!strings.Contains(err.Error(),"assigned to project"){t.Fatalf("expected persisted port conflict, got %v",err)}
+}

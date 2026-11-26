@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"log"
 
 	"fyne.io/fyne/v2/app"
@@ -10,14 +12,22 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() (err error) {
 	backend, err := application.NewLocalManager()
 	if err != nil {
-		log.Fatalf("initialize Tilt Desktop: %v", err)
+		return fmt.Errorf("initialize Tilt Desktop: %w", err)
 	}
-	application := app.NewWithID("dev.tilt-desktop")
-	window, err := desktop.NewWindow(application, backend)
+	defer func() { err = errors.Join(err, backend.Close()) }()
+	gui := app.NewWithID("dev.tilt-desktop")
+	window, err := desktop.NewWindow(gui, backend)
 	if err != nil {
-		log.Fatalf("create Tilt Desktop window: %v", err)
+		return fmt.Errorf("create Tilt Desktop window: %w", err)
 	}
 	window.ShowAndRun()
+	return nil
 }
