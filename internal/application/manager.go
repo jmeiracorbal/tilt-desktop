@@ -1,4 +1,4 @@
-// Package application composes project definitions, dedicated k3d clusters,
+// Package application composes project definitions, managed k3d clusters,
 // and independent Tilt sessions without introducing a GUI or persistent catalog.
 package application
 
@@ -82,7 +82,7 @@ type Manager struct {
 	beforeTiltStart func(k3d.Spec, tilt.Config) error
 	checkRegistryPort func(string,uint16) error
 	checkTiltPort func(string,uint16) error
-	sharedRegistryPort func(string) uint16
+	sharedRegistryPort func(string) (uint16,error)
 	validateSharedStart func(string,k3d.Spec,bool) error
 }
 
@@ -113,7 +113,7 @@ func (m *Manager) register(directory,sharedName string) (project.Definition,erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing,exists:=m.apps[id];exists{
-		if sharedName!=""&&existing.definition.Cluster!=assignment{return project.Definition{},ErrClusterAssignmentConflict}
+		if existing.definition.Cluster!=assignment{return project.Definition{},ErrClusterAssignmentConflict}
 		return existing.definition,nil
 	}
 	m.apps[id]=&entry{definition:definition}
@@ -149,7 +149,8 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 	}
 	var reserved uint16
 	if a.definition.Cluster.Mode==project.Shared{
-		reserved=m.sharedRegistryPort(a.definition.Cluster.Name)
+		reserved,err=m.sharedRegistryPort(a.definition.Cluster.Name)
+		if err!=nil{return err}
 	}
 	spec,existed,credentials,err:=m.clusters.prepare(ctx,a.definition.Cluster.Name,reserved,func(spec k3d.Spec,existed bool)error{
 		if a.definition.Cluster.Mode==project.Shared{
