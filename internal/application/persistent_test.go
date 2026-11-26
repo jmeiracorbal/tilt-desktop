@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jmeiracorbal/tilt-desktop/internal/tilt"
@@ -191,4 +192,49 @@ func TestPersistentPortConflictRejectsRegistryBeforeCreation(t *testing.T) {
 	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
 	if err:=m.Start(context.Background(),second.ID);err==nil||!strings.Contains(err.Error(),"assigned to project"){t.Fatalf("expected reserved port conflict, got %v",err)}
 	if c.exists||len(tm.configs)!=0{t.Fatal("conflict created external resources")}
+}
+
+func TestPersistentConcurrentRegistrationSurvivesReopen(t *testing.T) {
+	m,c,tm,ports,registries,observer,_,path:=persistentFixture(t)
+	const count=12
+	dirs:=make([]string,count)
+	for n:=range dirs{
+		dirs[n]=t.TempDir()
+		if err:=os.WriteFile(filepath.Join(dirs[n],"Tiltfile"),[]byte("# concurrent registration\n"),0600);err!=nil{t.Fatal(err)}
+	}
+	var wg sync.WaitGroup
+	errs:=make(chan error,count*2)
+	for _,dir:=range dirs{
+		for n:=0;n<2;n++{
+			wg.Add(1)
+			go func(directory string){
+				defer wg.Done()
+				_,err:=m.Register(directory)
+				errs<-err
+			}(dir)
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err:=range errs{if err!=nil{t.Fatal(err)}}
+	if got:=len(m.List());got!=count{t.Fatalf("registered %d projects, want %d",got,count)}
+	if err:=m.Close();err!=nil{t.Fatal(err)}
+	reopened,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	if err!=nil{t.Fatal(err)}
+	defer reopened.Close()
+	if got:=len(reopened.List());got!=count{t.Fatalf("restored %d projects, want %d",got,count)}
+}
+
+func TestPersistentConstructorFailureReleasesOwnership(t *testing.T) {
+	m,c,tm,ports,registries,observer,_,path:=persistentFixture(t)
+	if err:=m.Close();err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(path,[]byte("invalid catalog"),0600);err!=nil{t.Fatal(err)}
+	if err:=protectPrivateFile(path);err!=nil{t.Fatal(err)}
+	failed,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	if failed!=nil{_ = failed.Close();t.Fatal("opened corrupt catalog")}
+	if err==nil||errors.Is(err,ErrInstanceRunning){t.Fatalf("unexpected constructor error: %v",err)}
+	if err:=os.Remove(path);err!=nil{t.Fatal(err)}
+	recovered,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	if err!=nil{t.Fatalf("constructor leaked ownership: %v",err)}
+	defer recovered.Close()
 }
