@@ -54,6 +54,20 @@ func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registr
 	manager:=&PersistentManager{core:core,store:store,observer:observer,lock:lock}
 	core.checkRegistryPort=store.checkRegistryPort
 	core.checkTiltPort=store.checkTiltPort
+	core.sharedRegistryPort=func(name string)uint16{
+		cluster,_:=store.cluster(name)
+		return cluster.RegistryPort
+	}
+	core.validateSharedStart=func(id string,spec k3d.Spec,existed bool)error{
+		if !existed{
+			for _,rec:=range store.all(){
+				if rec.ClusterName==spec.Name&&rec.ID!=id&&rec.Phase!=phaseIdle{
+					return fmt.Errorf("%w: project %s has an unresolved session",ErrClusterInUse,rec.ID)
+				}
+			}
+		}
+		return nil
+	}
 	core.beforeTiltStart=func(spec k3d.Spec, config tilt.Config)error{
 		rec,err:=manager.record(config.ProjectID)
 		if err!=nil{return err}
@@ -102,13 +116,26 @@ func (m *PersistentManager) record(id string)(catalogEntry,error){
 // Register validates the folder and makes a durable catalog entry. Existing
 // records are kept intact, including any unresolved prior process identity.
 func (m *PersistentManager) Register(directory string)(project.Definition,error){
+	return m.register(directory,"")
+}
+
+// RegisterShared assigns a project to a managed shared cluster by its full
+// name. A new cluster is recorded immediately and provisioned on first Start.
+func (m *PersistentManager) RegisterShared(directory,name string)(project.Definition,error){
+	if !validSharedName(name){return project.Definition{},fmt.Errorf("invalid shared cluster name %q",name)}
+	return m.register(directory,name)
+}
+
+func (m *PersistentManager) register(directory,sharedName string)(project.Definition,error){
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed{return project.Definition{},ErrManagerClosed}
-	def,err:=m.core.Register(directory)
+	def,err:=m.core.register(directory,sharedName)
 	if err!=nil{return def,err}
 	if _,err:=m.record(def.ID);err==nil{return def,nil}
-	if err:=m.store.upsert(catalogEntry{catalogRecord:catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,Phase:phaseIdle},clusterRecord:clusterRecord{Name:def.Cluster.Name,Mode:def.Cluster.Mode}});err!=nil{
+	cluster,exists:=m.store.cluster(def.Cluster.Name)
+	if !exists{cluster=clusterRecord{Name:def.Cluster.Name,Mode:def.Cluster.Mode}}
+	if err:=m.store.upsert(catalogEntry{catalogRecord:catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,Phase:phaseIdle},clusterRecord:cluster});err!=nil{
 		m.core.mu.Lock();delete(m.core.apps,def.ID);m.core.mu.Unlock()
 		return project.Definition{},fmt.Errorf("persist registered project: %w",err)
 	}
@@ -314,7 +341,7 @@ func (m *PersistentManager) stop(ctx context.Context,id string)error{
 		}
 	}
 	if err:=m.core.Stop(ctx,id);err!=nil{return err}
-	if rec.Phase==phaseIdle{
+	if rec.Phase==phaseIdle&&rec.Mode==project.Dedicated{
 		// Restored catalog records have no child-process handle; they can
 		// still stop a cluster after ownership checks in k3d.
 		if err:=m.core.clusters.stopExisting(ctx,rec.ClusterName);err!=nil{return err}
