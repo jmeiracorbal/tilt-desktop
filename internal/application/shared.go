@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/jmeiracorbal/tilt-desktop/internal/environment"
 	"github.com/jmeiracorbal/tilt-desktop/internal/project"
 )
 
@@ -53,6 +54,7 @@ func (m *PersistentManager) StopSharedCluster(ctx context.Context,name string)er
 			return fmt.Errorf("%w: project %s is %s",ErrClusterInUse,rec.ID,rec.Phase)
 		}
 	}
+	if err:=m.requirements.Require(ctx,environment.ManageCluster);err!=nil{return err}
 	return m.core.clusters.stopExisting(ctx,name)
 }
 
@@ -68,6 +70,7 @@ func (m *PersistentManager) DeleteSharedCluster(ctx context.Context,name string,
 	for _,rec:=range m.store.all(){
 		if rec.ClusterName==name{return fmt.Errorf("%w: project %s is still assigned",ErrClusterInUse,rec.ID)}
 	}
+	if err:=m.requirements.Require(ctx,environment.ManageCluster);err!=nil{return err}
 	if err:=m.core.clusters.deleteExisting(ctx,name);err!=nil{return err}
 	return m.store.removeSharedCluster(name)
 }
