@@ -56,17 +56,17 @@ func NewChecker() *Checker {
 // errors rather than stopping at the first missing dependency. Each version
 // command has its own deadline and also honors the caller's context.
 func (c *Checker) CheckTools(ctx context.Context) []ToolResult {
-	tools := []struct {
-		tool Tool
-		arg  string
-	}{
-		{Docker, "--version"},
-		{K3d, "version"},
-		{Tilt, "version"},
-	}
+	return c.checkTools(ctx, []Tool{Docker, K3d, Tilt})
+}
+
+func (c *Checker) checkTools(ctx context.Context, tools []Tool) []ToolResult {
 	results := make([]ToolResult, 0, len(tools))
 	for _, tool := range tools {
-		results = append(results, c.checkTool(ctx, tool.tool, tool.arg))
+		arg := "version"
+		if tool == Docker {
+			arg = "--version"
+		}
+		results = append(results, c.checkTool(ctx, tool, arg))
 	}
 	return results
 }
