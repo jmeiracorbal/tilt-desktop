@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jmeiracorbal/tilt-desktop/internal/project"
 	"github.com/jmeiracorbal/tilt-desktop/internal/tilt"
 )
 
@@ -99,9 +100,10 @@ func TestRecoverDefinitelyExitedProcess(t *testing.T){
 	port,err:=(NetPorts{}).Available();if err!=nil{t.Fatal(err)}
 	tmp,err:=os.CreateTemp("","tilt-desktop-kubeconfig-*");if err!=nil{t.Fatal(err)}
 	path:=tmp.Name();if err:=tmp.Close();err!=nil{t.Fatal(err)}
-	rec:=catalogRecord{
-		ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
-		RegistryPort:5111,TiltPort:port,Kubeconfig:path,PID:999999999,Phase:phaseRunning,
+	rec:=catalogEntry{
+		catalogRecord:catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
+			TiltPort:port,Kubeconfig:path,PID:999999999,Phase:phaseRunning},
+		clusterRecord:clusterRecord{Name:def.Cluster.Name,Mode:project.Dedicated,RegistryPort:5111},
 	}
 	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
 	state,err:=m.Reconcile(context.Background(),def.ID)
@@ -115,8 +117,11 @@ func TestReconcileLeavesUnknownProcessUntouched(t *testing.T){
 	def,err:=m.Register(dir);if err!=nil{t.Fatal(err)}
 	f,err:=os.CreateTemp("","tilt-desktop-kubeconfig-*");if err!=nil{t.Fatal(err)}
 	defer os.Remove(f.Name());f.Close()
-	rec:=catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
-		RegistryPort:5111,TiltPort:10351,Kubeconfig:f.Name(),PID:int64(os.Getpid()),Phase:phaseRunning}
+	rec:=catalogEntry{
+		catalogRecord:catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
+			TiltPort:10351,Kubeconfig:f.Name(),PID:int64(os.Getpid()),Phase:phaseRunning},
+		clusterRecord:clusterRecord{Name:def.Cluster.Name,Mode:project.Dedicated,RegistryPort:5111},
+	}
 	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
 	state,err:=m.Reconcile(context.Background(),def.ID)
 	if err!=nil||state.Phase!="unknown"{t.Fatalf("expected unknown state: %+v %v",state,err)}
