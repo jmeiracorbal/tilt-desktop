@@ -135,6 +135,10 @@ func decodeStrict(payload []byte, target any) error {
 
 var clusterNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
+func validSharedName(name string)bool{
+	return strings.HasPrefix(name,"td-shared-")&&clusterNamePattern.MatchString(name)
+}
+
 func validateRecord(record catalogRecord) error {
 	if record.ID == "" || !filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid catalog entry %q", record.ID)
@@ -176,7 +180,7 @@ func validateCatalog(records map[string]catalogRecord, clusters map[string]clust
 		switch cluster.Mode {
 		case project.Dedicated:
 		case project.Shared:
-			if !strings.HasPrefix(cluster.Name, "td-shared-") {
+			if !validSharedName(cluster.Name) {
 				return fmt.Errorf("invalid shared cluster identity %q", cluster.Name)
 			}
 		default:
@@ -207,6 +211,26 @@ func validateCatalog(records map[string]catalogRecord, clusters map[string]clust
 			return fmt.Errorf("dedicated cluster %q requires exactly one project", cluster.Name)
 		}
 	}
+	return nil
+}
+
+func (s *catalogStore) cluster(name string)(clusterRecord,bool){
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cluster,ok:=s.clusters[name]
+	return cluster,ok
+}
+
+func (s *catalogStore) removeSharedCluster(name string)error{
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cluster,ok:=s.clusters[name]
+	if !ok||cluster.Mode!=project.Shared{return ErrClusterNotRegistered}
+	for _,rec:=range s.records{
+		if rec.ClusterName==name{return ErrClusterInUse}
+	}
+	delete(s.clusters,name)
+	if err:=s.flush();err!=nil{s.clusters[name]=cluster;return err}
 	return nil
 }
 
