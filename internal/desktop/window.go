@@ -54,6 +54,7 @@ type view struct {
 	notice *widget.Label
 	add *widget.Button
 	shared *widget.Button
+	environment *widget.Button
 	start *widget.Button
 	stop *widget.Button
 	delete *widget.Button
@@ -102,6 +103,7 @@ func NewWindow(app fyne.App, backend Backend) (fyne.Window, error) {
 
 	v.add = widget.NewButton("Add project", v.chooseFolder)
 	v.shared = widget.NewButton("Shared clusters", v.showSharedClusters)
+	v.environment = widget.NewButton("Environment", v.showEnvironment)
 	v.refresh = widget.NewButton("Refresh", v.refreshAll)
 	v.start = widget.NewButton("Start", func() {
 		id := v.selected
@@ -117,7 +119,7 @@ func NewWindow(app fyne.App, backend Backend) (fyne.Window, error) {
 
 	heading := container.NewBorder(nil, nil, nil, container.NewHBox(v.add, v.refresh),
 		widget.NewLabelWithStyle("Tilt Desktop", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
-	sidebar := container.NewBorder(heading, v.shared, nil, nil, v.projects)
+	sidebar := container.NewBorder(heading, container.NewVBox(v.shared, v.environment), nil, nil, v.projects)
 
 	actions := container.NewHBox(v.start, v.stop, v.delete)
 	details := container.NewVBox(v.title, v.metadata, actions)
@@ -278,6 +280,7 @@ func (v *view) updateButtons() {
 	state, ok := v.selectedState()
 	setEnabled(v.add, !v.busy)
 	setEnabled(v.shared, !v.busy)
+	setEnabled(v.environment, !v.busy)
 	setEnabled(v.refresh, !v.busy)
 	setEnabled(v.start, !v.busy && ok && canStart(state))
 	setEnabled(v.stop, !v.busy && ok && canStop(state))
