@@ -58,7 +58,8 @@ func TestClusterAssignmentRejectedBeforeRuntimeMutation(t *testing.T) {
 		ports: &fakePorts{values: []uint16{5111}},
 	}
 	conflict := errors.New("assignment conflicts with existing cluster")
-	_, _, _, err := manager.prepare(context.Background(), "development", 0, func(k3d.Spec) error {
+	_, _, _, err := manager.prepare(context.Background(), "development", 0, func(_ k3d.Spec, existed bool) error {
+		if existed { t.Fatal("unexpected existing cluster") }
 		return conflict
 	})
 	if !errors.Is(err, conflict) {
