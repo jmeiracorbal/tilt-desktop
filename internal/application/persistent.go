@@ -54,9 +54,10 @@ func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registr
 	manager:=&PersistentManager{core:core,store:store,observer:observer,lock:lock}
 	core.checkRegistryPort=store.checkRegistryPort
 	core.checkTiltPort=store.checkTiltPort
-	core.sharedRegistryPort=func(name string)uint16{
-		cluster,_:=store.cluster(name)
-		return cluster.RegistryPort
+	core.sharedRegistryPort=func(name string)(uint16,error){
+		cluster,ok:=store.cluster(name)
+		if !ok||cluster.Mode!=project.Shared{return 0,ErrClusterNotRegistered}
+		return cluster.RegistryPort,nil
 	}
 	core.validateSharedStart=func(id string,spec k3d.Spec,existed bool)error{
 		if !existed{
