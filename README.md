@@ -66,6 +66,21 @@ Use **Shared clusters** to inspect registry ports and project/session counts, st
 
 Long-running operations execute off the GUI thread. **Refresh** reconciles the persisted catalog against observable Tilt sessions. Unverified, orphaned or starting sessions block destructive operations. Closing the window while managed sessions are running asks whether to stop them first; it does not run `tilt down`.
 
+### Environment diagnostics
+
+The **Environment** dialog reports the resolved executable paths and versions of Docker, k3d and Tilt, and checks whether Docker's daemon responds and supports Linux containers. It uses the same Go evaluator as the headless installation preflight.
+
+For installation tooling, build or download the platform-specific `tilt-desktop-check` binary (`tilt-desktop-check.exe` on Windows). It is compiled without CGO and does not need Fyne, a display, or access to the project catalog:
+
+```sh
+CGO_ENABLED=0 go build -o tilt-desktop-check ./cmd/tilt-desktop-check
+./tilt-desktop-check
+```
+
+The command emits a JSON report with `ready` and `checks`, including paths, versions and diagnostic errors. Exit status 0 means all probes passed, 1 means environment requirements are not satisfied, and 2 indicates command usage or output failure. Run the evaluator in the intended desktop user's environment, not an unrelated privileged installation context.
+
+The future curl-based installation script and native installers must consume this same preflight rather than implementing independent dependency detection. A drag-and-drop DMG does not run installation hooks; it requires an explicit preflight launcher or first-launch check. No installer or public release is published yet. The evaluator does not install tools, change permissions or contexts, or guarantee version compatibility and successful cluster provisioning.
+
 ### Native build artifacts
 
 The `Desktop packages` GitHub Actions workflow creates native test packages using the pinned Fyne CLI and the Go module lockfile:
@@ -77,7 +92,7 @@ The `Desktop packages` GitHub Actions workflow creates native test packages usin
 | macOS Intel | `tilt-desktop-macos-amd64` | `TiltDesktop-macos-amd64.zip` containing `TiltDesktop.app` |
 | Windows x86-64 | `tilt-desktop-windows-amd64` | `TiltDesktop-windows-amd64.zip` containing the native `.exe` |
 
-Open the `Desktop packages` run under GitHub Actions to access its retained artifacts. These are **unsigned, unnotarized CI builds**, not public installers or a supported end-user release. macOS Gatekeeper and Windows SmartScreen may restrict their use. There is no automatic release publishing.
+Open the `Desktop packages` run under GitHub Actions to access its retained artifacts. Each artifact includes the matching headless dependency evaluator alongside the desktop package. These are **unsigned, unnotarized CI builds**, not public installers or a supported end-user release. macOS Gatekeeper and Windows SmartScreen may restrict their use. There is no automatic release publishing.
 
 Creating and running application environments still requires Docker, k3d and Tilt installed separately. Packaging the desktop does not bundle or install these tools. CI verifies the native build on each target; runtime integration with Docker/k3d/Tilt remains exercised on Linux only. Native GUI behavior on macOS and Windows has not been validated end-to-end.
 
