@@ -41,22 +41,27 @@ func (m *clusterManager) discover(ctx context.Context, name string) (k3d.Spec, b
 // prepare resolves the cluster's own identity and registry, validates the
 // assignment before changing runtime state, and returns its private credentials.
 // Only resources newly created by this attempt may be rolled back.
-func (m *clusterManager) prepare(ctx context.Context, name string, validate func(k3d.Spec) error) (k3d.Spec, bool, []byte, error) {
+func (m *clusterManager) prepare(ctx context.Context, name string, reserved uint16, validate func(k3d.Spec,bool) error) (k3d.Spec, bool, []byte, error) {
 	spec, existed, err := m.discover(ctx, name)
 	if err != nil {
 		return k3d.Spec{}, existed, nil, err
 	}
+	if existed && reserved!=0 && spec.RegistryPort!=reserved {
+		return k3d.Spec{}, true, nil, fmt.Errorf("cluster %q registry port differs from catalog: %d != %d", name,spec.RegistryPort,reserved)
+	}
 	if !existed {
-		port, err := m.ports.Available()
-		if err != nil {
-			return k3d.Spec{}, false, nil, fmt.Errorf("allocate registry port: %w", err)
+		port:=reserved
+		if port==0{
+			var err error
+			port,err=m.ports.Available()
+			if err!=nil{return k3d.Spec{},false,nil,fmt.Errorf("allocate registry port: %w",err)}
 		}
 		if port == 0 {
 			return k3d.Spec{}, false, nil, errors.New("port allocator returned zero registry port")
 		}
 		spec = k3d.Spec{Name: name, ManagementID: name, RegistryPort: port}
 	}
-	if err := validate(spec); err != nil {
+	if err := validate(spec,existed); err != nil {
 		return k3d.Spec{}, existed, nil, err
 	}
 	if err := m.runtime.Ensure(ctx, spec); err != nil {
