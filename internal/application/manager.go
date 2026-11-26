@@ -18,7 +18,9 @@ import (
 var (
 	ErrNotRegistered = errors.New("application is not registered")
 	ErrConfirmationRequired = errors.New("application deletion requires confirmation")
-	ErrSharedLifecycleUnsupported = errors.New("shared cluster lifecycle is not supported yet")
+	ErrClusterInUse = errors.New("shared cluster is in use")
+	ErrClusterNotRegistered = errors.New("shared cluster is not registered")
+	ErrClusterAssignmentConflict = errors.New("project already has a different cluster assignment")
 )
 
 // Clusters is the lifecycle contract implemented by the k3d client.
@@ -69,7 +71,8 @@ type entry struct {
 }
 
 // Manager serializes each project's lifecycle independently. Cross-process
-// locking, catalog persistence and shared clusters are outside its scope.
+// locking and catalog persistence are outside its scope. Shared registration
+// and lifecycle coordination are exposed only through PersistentManager.
 type Manager struct {
 	mu sync.RWMutex
 	clusters *clusterManager
@@ -79,6 +82,8 @@ type Manager struct {
 	beforeTiltStart func(k3d.Spec, tilt.Config) error
 	checkRegistryPort func(string,uint16) error
 	checkTiltPort func(string,uint16) error
+	sharedRegistryPort func(string) uint16
+	validateSharedStart func(string,k3d.Spec,bool) error
 }
 
 func NewManager(clusters Clusters, tiltManager Tilt, ports Ports, registries Registries) (*Manager,error) {
@@ -91,17 +96,26 @@ func NewManager(clusters Clusters, tiltManager Tilt, ports Ports, registries Reg
 // Register validates the project's Tiltfile and derives a deterministic
 // cluster identity from the canonical absolute path.
 func (m *Manager) Register(directory string) (project.Definition,error) {
+	return m.register(directory, "")
+}
+
+func (m *Manager) register(directory,sharedName string) (project.Definition,error) {
 	if directory=="" {return project.Definition{},errors.New("project directory is required")}
 	root,err:=filepath.Abs(directory)
 	if err!=nil{return project.Definition{},fmt.Errorf("resolve project directory: %w",err)}
 	root,err=filepath.EvalSymlinks(root)
 	if err!=nil{return project.Definition{},fmt.Errorf("canonicalize project directory: %w",err)}
 	id:=projectID(root)
-	definition,err:=project.NewDefinition(id,root,project.ClusterAssignment{Mode:project.Dedicated,Name:id})
+	assignment:=project.ClusterAssignment{Mode:project.Dedicated,Name:id}
+	if sharedName!=""{assignment=project.ClusterAssignment{Mode:project.Shared,Name:sharedName}}
+	definition,err:=project.NewDefinition(id,root,assignment)
 	if err!=nil{return project.Definition{},err}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing,exists:=m.apps[id];exists{return existing.definition,nil}
+	if existing,exists:=m.apps[id];exists{
+		if sharedName!=""&&existing.definition.Cluster!=assignment{return project.Definition{},ErrClusterAssignmentConflict}
+		return existing.definition,nil
+	}
 	m.apps[id]=&entry{definition:definition}
 	return definition,nil
 }
@@ -114,7 +128,7 @@ func (m *Manager) lookup(id string) (*entry,error) {
 	return a,nil
 }
 
-// Start creates or resumes a dedicated cluster, writes its credentials to a
+// Start creates or resumes the assigned cluster, writes its credentials to a
 // private temporary file, then starts Tilt. When a newly created cluster
 // cannot be started it is rolled back; a preexisting one is never deleted.
 func (m *Manager) Start(ctx context.Context,id string) error {
@@ -123,7 +137,6 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.deleted{return fmt.Errorf("%w: %s",ErrNotRegistered,id)}
-	if a.definition.Cluster.Mode!=project.Dedicated{return ErrSharedLifecycleUnsupported}
 	if err:=ctx.Err();err!=nil{return err}
 	if a.active {
 		state,err:=m.tilt.Status(id)
@@ -134,7 +147,14 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 		}
 		a.active=false
 	}
-	spec,existed,credentials,err:=m.clusters.prepare(ctx,a.definition.Cluster.Name,func(spec k3d.Spec)error{
+	var reserved uint16
+	if a.definition.Cluster.Mode==project.Shared{
+		reserved=m.sharedRegistryPort(a.definition.Cluster.Name)
+	}
+	spec,existed,credentials,err:=m.clusters.prepare(ctx,a.definition.Cluster.Name,reserved,func(spec k3d.Spec,existed bool)error{
+		if a.definition.Cluster.Mode==project.Shared{
+			if err:=m.validateSharedStart(id,spec,existed);err!=nil{return err}
+		}
 		if m.checkRegistryPort!=nil {
 			if err:=m.checkRegistryPort(spec.Name,spec.RegistryPort);err!=nil{return err}
 			if a.config.Port!=0&&a.config.Port==spec.RegistryPort{return fmt.Errorf("registry and Tilt port collide: %d",spec.RegistryPort)}
@@ -196,7 +216,7 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 	return nil
 }
 
-// Stop interrupts Tilt, then stops the dedicated cluster. It does not run
+// Stop interrupts Tilt, then stops its cluster only in dedicated mode. It does not run
 // tilt down or delete the cluster's deployed workloads and persistent data.
 func (m *Manager) Stop(ctx context.Context,id string) error {
 	a,err:=m.lookup(id)
@@ -204,14 +224,15 @@ func (m *Manager) Stop(ctx context.Context,id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.deleted{return fmt.Errorf("%w: %s",ErrNotRegistered,id)}
-	if a.definition.Cluster.Mode!=project.Dedicated{return ErrSharedLifecycleUnsupported}
 	return m.stop(ctx,a)
 }
 
 func (m *Manager) stop(ctx context.Context,a *entry) error {
 	if !a.active{return nil}
 	if err:=m.tilt.Stop(ctx,a.definition.ID);err!=nil{return fmt.Errorf("stop Tilt: %w",err)}
-	if err:=m.clusters.stop(ctx,a.spec);err!=nil{return err}
+	if a.definition.Cluster.Mode==project.Dedicated{
+		if err:=m.clusters.stop(ctx,a.spec);err!=nil{return err}
+	}
 	if err:=os.Remove(a.config.Kubeconfig);err!=nil&&!errors.Is(err,os.ErrNotExist) {
 		return fmt.Errorf("remove private kubeconfig: %w",err)
 	}
@@ -220,7 +241,7 @@ func (m *Manager) stop(ctx context.Context,a *entry) error {
 }
 
 // Delete destroys the dedicated cluster only with explicit confirmation.
-// It never adopts or destroys a shared cluster.
+// Removing a shared project never destroys its cluster.
 func (m *Manager) Delete(ctx context.Context,id string,confirmed bool) error {
 	if !confirmed{return ErrConfirmationRequired}
 	a,err:=m.lookup(id)
@@ -228,9 +249,10 @@ func (m *Manager) Delete(ctx context.Context,id string,confirmed bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.deleted{return fmt.Errorf("%w: %s",ErrNotRegistered,id)}
-	if a.definition.Cluster.Mode!=project.Dedicated{return ErrSharedLifecycleUnsupported}
 	if err:=m.stop(ctx,a);err!=nil{return err}
-	if err:=m.clusters.deleteExisting(ctx,a.definition.Cluster.Name);err!=nil{return err}
+	if a.definition.Cluster.Mode==project.Dedicated{
+		if err:=m.clusters.deleteExisting(ctx,a.definition.Cluster.Name);err!=nil{return err}
+	}
 	a.deleted=true
 	m.mu.Lock()
 	delete(m.apps,id)
