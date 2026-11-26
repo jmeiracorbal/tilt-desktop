@@ -247,6 +247,8 @@ func TestPersistentConstructorFailureReleasesOwnership(t *testing.T) {
 func TestPersistentSharedAssignmentsDoNotMutateRuntime(t *testing.T) {
 	m,c,tm,ports,registries,observer,dir,path:=persistentFixture(t)
 	if err:=m.Close();err!=nil{t.Fatal(err)}
+	dir,err:=filepath.EvalSymlinks(dir)
+	if err!=nil{t.Fatal(err)}
 	store,err:=openCatalog(path)
 	if err!=nil{t.Fatal(err)}
 	first:=catalogEntry{
