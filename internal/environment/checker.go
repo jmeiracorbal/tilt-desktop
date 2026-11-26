@@ -102,23 +102,23 @@ func (c *Checker) checkTool(ctx context.Context, tool Tool, arg string) ToolResu
 func runCommand(ctx context.Context, path string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.WaitDelay = time.Second
-	output := &limitedOutput{}
-	cmd.Stdout, cmd.Stderr = output, output
+	stdout, stderr := &limitedOutput{}, &limitedOutput{}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err := cmd.Run()
-	value := strings.TrimSpace(string(output.data))
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	if output.truncated {
+	if stdout.truncated || stderr.truncated {
 		return "", errors.Join(ErrOutputLimit, err)
 	}
 	if err != nil {
-		if value != "" {
-			return "", fmt.Errorf("%w: %s", err, value)
+		detail := strings.TrimSpace(string(stderr.data))
+		if detail == "" {
+			return "", err
 		}
-		return "", err
+		return "", fmt.Errorf("%w: %s", err, detail)
 	}
-	return value, nil
+	return strings.TrimSpace(string(stdout.data)), nil
 }
 
 const outputLimit = 8192
