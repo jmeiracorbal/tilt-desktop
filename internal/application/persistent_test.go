@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jmeiracorbal/tilt-desktop/internal/project"
 	"github.com/jmeiracorbal/tilt-desktop/internal/tilt"
 )
 
@@ -99,9 +100,10 @@ func TestRecoverDefinitelyExitedProcess(t *testing.T){
 	port,err:=(NetPorts{}).Available();if err!=nil{t.Fatal(err)}
 	tmp,err:=os.CreateTemp("","tilt-desktop-kubeconfig-*");if err!=nil{t.Fatal(err)}
 	path:=tmp.Name();if err:=tmp.Close();err!=nil{t.Fatal(err)}
-	rec:=catalogRecord{
-		ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
-		RegistryPort:5111,TiltPort:port,Kubeconfig:path,PID:999999999,Phase:phaseRunning,
+	rec:=catalogEntry{
+		catalogRecord:catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
+			TiltPort:port,Kubeconfig:path,PID:999999999,Phase:phaseRunning},
+		clusterRecord:clusterRecord{Name:def.Cluster.Name,Mode:project.Dedicated,RegistryPort:5111},
 	}
 	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
 	state,err:=m.Reconcile(context.Background(),def.ID)
@@ -115,8 +117,11 @@ func TestReconcileLeavesUnknownProcessUntouched(t *testing.T){
 	def,err:=m.Register(dir);if err!=nil{t.Fatal(err)}
 	f,err:=os.CreateTemp("","tilt-desktop-kubeconfig-*");if err!=nil{t.Fatal(err)}
 	defer os.Remove(f.Name());f.Close()
-	rec:=catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
-		RegistryPort:5111,TiltPort:10351,Kubeconfig:f.Name(),PID:int64(os.Getpid()),Phase:phaseRunning}
+	rec:=catalogEntry{
+		catalogRecord:catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,
+			TiltPort:10351,Kubeconfig:f.Name(),PID:int64(os.Getpid()),Phase:phaseRunning},
+		clusterRecord:clusterRecord{Name:def.Cluster.Name,Mode:project.Dedicated,RegistryPort:5111},
+	}
 	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
 	state,err:=m.Reconcile(context.Background(),def.ID)
 	if err!=nil||state.Phase!="unknown"{t.Fatalf("expected unknown state: %+v %v",state,err)}
@@ -237,4 +242,81 @@ func TestPersistentConstructorFailureReleasesOwnership(t *testing.T) {
 	recovered,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
 	if err!=nil{t.Fatalf("constructor leaked ownership: %v",err)}
 	defer recovered.Close()
+}
+
+func TestSharedClusterLifecycle(t *testing.T) {
+	m,c,tm,ports,registries,observer,dir,path:=persistentFixture(t)
+	ctx:=context.Background()
+	const name="td-shared-development"
+	first,err:=m.RegisterShared(dir,name)
+	if err!=nil{t.Fatal(err)}
+	secondDir:=t.TempDir()
+	if err:=os.WriteFile(filepath.Join(secondDir,"Tiltfile"),[]byte("# second\n"),0600);err!=nil{t.Fatal(err)}
+	second,err:=m.RegisterShared(secondDir,name)
+	if err!=nil{t.Fatal(err)}
+	if _,err:=m.RegisterShared(dir,"td-shared-other");!errors.Is(err,ErrClusterAssignmentConflict){t.Fatalf("assignment changed: %v",err)}
+	if _,err:=m.Register(dir);!errors.Is(err,ErrClusterAssignmentConflict){t.Fatalf("dedicated registration silently retained shared assignment: %v",err)}
+	if err:=m.Start(ctx,first.ID);err!=nil{t.Fatal(err)}
+	if err:=m.Start(ctx,second.ID);err!=nil{t.Fatal(err)}
+	if len(tm.configs)!=2||ports.index!=3||c.spec.Name!=name{t.Fatalf("unexpected allocations: %+v %d",tm.configs,ports.index)}
+	if tm.configs[0].Port==tm.configs[1].Port||tm.configs[0].Kubeconfig==tm.configs[1].Kubeconfig{t.Fatal("sessions are not independent")}
+	if err:=m.StopSharedCluster(ctx,name);!errors.Is(err,ErrClusterInUse){t.Fatalf("active cluster stop: %v",err)}
+	if err:=m.DeleteSharedCluster(ctx,name,true);!errors.Is(err,ErrClusterInUse){t.Fatalf("assigned cluster deletion: %v",err)}
+	if err:=m.Stop(ctx,first.ID);err!=nil{t.Fatal(err)}
+	if err:=m.Delete(ctx,first.ID,true);err!=nil{t.Fatal(err)}
+	if !tm.running[second.ID]||!c.exists{t.Fatal("another project's lifecycle was interrupted")}
+	for _,call:=range c.trace.all(){if call=="cluster.stop"||call=="cluster.delete"{t.Fatalf("project lifecycle mutated shared cluster: %s",call)}}
+	if err:=m.Stop(ctx,second.ID);err!=nil{t.Fatal(err)}
+	if err:=m.StopSharedCluster(ctx,name);err!=nil{t.Fatal(err)}
+	if err:=m.DeleteSharedCluster(ctx,name,true);!errors.Is(err,ErrClusterInUse){t.Fatalf("idle member was ignored: %v",err)}
+	if err:=m.Delete(ctx,second.ID,true);err!=nil{t.Fatal(err)}
+	if err:=m.Close();err!=nil{t.Fatal(err)}
+	reopened,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	if err!=nil{t.Fatal(err)}
+	defer reopened.Close()
+	clusters,err:=reopened.ListSharedClusters()
+	if err!=nil||len(clusters)!=1||clusters[0].Projects!=0||clusters[0].RegistryPort!=5111{t.Fatalf("shared cluster not retained: %+v %v",clusters,err)}
+	if err:=reopened.DeleteSharedCluster(ctx,name,false);!errors.Is(err,ErrConfirmationRequired){t.Fatalf("missing confirmation: %v",err)}
+	if err:=reopened.DeleteSharedCluster(ctx,name,true);err!=nil{t.Fatal(err)}
+	if c.exists{t.Fatal("shared cluster was not deleted")}
+	clusters,err=reopened.ListSharedClusters()
+	if err!=nil||len(clusters)!=0{t.Fatalf("deleted cluster remains in catalog: %+v %v",clusters,err)}
+}
+
+func TestSharedClusterStartFailurePreservesExistingCluster(t *testing.T) {
+	m,c,tm,_,_,_,dir,_:=persistentFixture(t)
+	const name="td-shared-development"
+	ctx:=context.Background()
+	first,err:=m.RegisterShared(dir,name)
+	if err!=nil{t.Fatal(err)}
+	secondDir:=t.TempDir()
+	if err:=os.WriteFile(filepath.Join(secondDir,"Tiltfile"),nil,0600);err!=nil{t.Fatal(err)}
+	second,err:=m.RegisterShared(secondDir,name)
+	if err!=nil{t.Fatal(err)}
+	if err:=m.Start(ctx,first.ID);err!=nil{t.Fatal(err)}
+	tm.startErr=errors.New("launch failed")
+	if err:=m.Start(ctx,second.ID);err==nil{t.Fatal("expected launch failure")}
+	if !c.exists||!tm.running[first.ID]{t.Fatal("failed start destroyed the existing shared environment")}
+	if err:=m.Stop(ctx,first.ID);err!=nil{t.Fatal(err)}
+}
+
+func TestSharedClusterBlocksUnresolvedSession(t *testing.T) {
+	m,c,_,_,_,_,dir,_:=persistentFixture(t)
+	const name="td-shared-development"
+	first,err:=m.RegisterShared(dir,name)
+	if err!=nil{t.Fatal(err)}
+	rec,err:=m.record(first.ID)
+	if err!=nil{t.Fatal(err)}
+	rec.RegistryPort=5111
+	rec.Phase=phaseUnknown
+	rec.TiltPort=10351
+	rec.Kubeconfig=filepath.Join(t.TempDir(),"tilt-desktop-kubeconfig-unknown")
+	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
+	if err:=m.StopSharedCluster(context.Background(),name);!errors.Is(err,ErrClusterInUse){t.Fatalf("unresolved session did not block cluster stop: %v",err)}
+	secondDir:=t.TempDir()
+	if err:=os.WriteFile(filepath.Join(secondDir,"Tiltfile"),nil,0600);err!=nil{t.Fatal(err)}
+	second,err:=m.RegisterShared(secondDir,name)
+	if err!=nil{t.Fatal(err)}
+	if err:=m.Start(context.Background(),second.ID);!errors.Is(err,ErrClusterInUse){t.Fatalf("recreated cluster with unresolved session: %v",err)}
+	if c.exists{t.Fatal("runtime mutated despite unresolved session")}
 }

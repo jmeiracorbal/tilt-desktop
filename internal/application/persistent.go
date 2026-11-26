@@ -48,16 +48,37 @@ func NewPersistentManager(clusters Clusters,tiltManager Tilt,ports Ports,registr
 	for _,rec:=range store.all(){
 		core.apps[rec.ID]=&entry{config:tilt.Config{Port:rec.TiltPort},definition:project.Definition{
 			ID:rec.ID,Directory:rec.Directory,Tiltfile:filepath.Join(rec.Directory,"Tiltfile"),
-			Cluster:project.ClusterAssignment{Mode:project.Dedicated,Name:rec.ClusterName},
+			Cluster:project.ClusterAssignment{Mode:rec.Mode,Name:rec.ClusterName},
 		}}
 	}
 	manager:=&PersistentManager{core:core,store:store,observer:observer,lock:lock}
-	core.checkPort=store.checkPort
+	core.checkRegistryPort=store.checkRegistryPort
+	core.checkTiltPort=store.checkTiltPort
+	core.sharedRegistryPort=func(name string)(uint16,error){
+		cluster,ok:=store.cluster(name)
+		if !ok||cluster.Mode!=project.Shared{return 0,ErrClusterNotRegistered}
+		return cluster.RegistryPort,nil
+	}
+	core.validateSharedStart=func(id string,spec k3d.Spec,existed bool)error{
+		if !existed{
+			for _,rec:=range store.all(){
+				if rec.ClusterName==spec.Name&&rec.ID!=id&&rec.Phase!=phaseIdle{
+					return fmt.Errorf("%w: project %s has an unresolved session",ErrClusterInUse,rec.ID)
+				}
+			}
+		}
+		return nil
+	}
 	core.beforeTiltStart=func(spec k3d.Spec, config tilt.Config)error{
-		return store.upsert(catalogRecord{
-			ID:config.ProjectID,Directory:config.Directory,ClusterName:spec.Name,
-			RegistryPort:spec.RegistryPort,TiltPort:config.Port,Kubeconfig:config.Kubeconfig,Phase:phaseStarting,
-		})
+		rec,err:=manager.record(config.ProjectID)
+		if err!=nil{return err}
+		if rec.ClusterName!=spec.Name||rec.Directory!=config.Directory{return errors.New("session does not match catalog assignment")}
+		rec.RegistryPort=spec.RegistryPort
+		rec.TiltPort=config.Port
+		rec.Kubeconfig=config.Kubeconfig
+		rec.Phase=phaseStarting
+		rec.PID=0
+		return store.upsert(rec)
 	}
 	return manager,nil
 }
@@ -85,24 +106,37 @@ func (m *PersistentManager) Close() error {
 	return m.lock.Close()
 }
 
-func (m *PersistentManager) record(id string)(catalogRecord,error){
-	if m.closed{return catalogRecord{},ErrManagerClosed}
+func (m *PersistentManager) record(id string)(catalogEntry,error){
+	if m.closed{return catalogEntry{},ErrManagerClosed}
 	for _,rec:=range m.store.all(){
 		if rec.ID==id{return rec,nil}
 	}
-	return catalogRecord{},fmt.Errorf("%w: %s",ErrNotRegistered,id)
+	return catalogEntry{},fmt.Errorf("%w: %s",ErrNotRegistered,id)
 }
 
 // Register validates the folder and makes a durable catalog entry. Existing
 // records are kept intact, including any unresolved prior process identity.
 func (m *PersistentManager) Register(directory string)(project.Definition,error){
+	return m.register(directory,"")
+}
+
+// RegisterShared assigns a project to a managed shared cluster by its full
+// name. A new cluster is recorded immediately and provisioned on first Start.
+func (m *PersistentManager) RegisterShared(directory,name string)(project.Definition,error){
+	if !validSharedName(name){return project.Definition{},fmt.Errorf("invalid shared cluster name %q",name)}
+	return m.register(directory,name)
+}
+
+func (m *PersistentManager) register(directory,sharedName string)(project.Definition,error){
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed{return project.Definition{},ErrManagerClosed}
-	def,err:=m.core.Register(directory)
+	def,err:=m.core.register(directory,sharedName)
 	if err!=nil{return def,err}
 	if _,err:=m.record(def.ID);err==nil{return def,nil}
-	if err:=m.store.upsert(catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,Phase:phaseIdle});err!=nil{
+	cluster,exists:=m.store.cluster(def.Cluster.Name)
+	if !exists{cluster=clusterRecord{Name:def.Cluster.Name,Mode:def.Cluster.Mode}}
+	if err:=m.store.upsert(catalogEntry{catalogRecord:catalogRecord{ID:def.ID,Directory:def.Directory,ClusterName:def.Cluster.Name,Phase:phaseIdle},clusterRecord:cluster});err!=nil{
 		m.core.mu.Lock();delete(m.core.apps,def.ID);m.core.mu.Unlock()
 		return project.Definition{},fmt.Errorf("persist registered project: %w",err)
 	}
@@ -117,7 +151,7 @@ func (m *PersistentManager) List() []State {
 	records:=m.store.all()
 	result:=make([]State,0,len(records))
 	for _,r:=range records{
-		result=append(result,State{ProjectID:r.ID,Directory:r.Directory,ClusterName:r.ClusterName,Registered:true,Phase:string(r.Phase),TiltPort:r.TiltPort,RegistryPort:r.RegistryPort})
+		result=append(result,State{ProjectID:r.ID,Directory:r.Directory,ClusterName:r.ClusterName,ClusterMode:r.Mode,Registered:true,Phase:string(r.Phase),TiltPort:r.TiltPort,RegistryPort:r.RegistryPort})
 	}
 	return result
 }
@@ -154,21 +188,23 @@ func (m *PersistentManager) Start(ctx context.Context,id string)error{
 	a.mu.Lock()
 	config,spec:=a.config,a.spec
 	a.mu.Unlock()
-	record:=catalogRecord{ID:id,Directory:rec.Directory,ClusterName:rec.ClusterName,
-		RegistryPort:spec.RegistryPort,TiltPort:config.Port,Kubeconfig:config.Kubeconfig,
-		Phase:phaseRunning,PID:int64(status.PID)}
-	if err:=m.store.upsert(record);err!=nil{return fmt.Errorf("record running Tilt session: %w",err)}
+	rec.RegistryPort=spec.RegistryPort
+	rec.TiltPort=config.Port
+	rec.Kubeconfig=config.Kubeconfig
+	rec.Phase=phaseRunning
+	rec.PID=int64(status.PID)
+	if err:=m.store.upsert(rec);err!=nil{return fmt.Errorf("record running Tilt session: %w",err)}
 	return nil
 }
 
-func projectFolderValid(rec catalogRecord)error{
-	if _,err:=project.NewDefinition(rec.ID,rec.Directory,project.ClusterAssignment{Mode:project.Dedicated,Name:rec.ClusterName});err!=nil{
+func projectFolderValid(rec catalogEntry)error{
+	if _,err:=project.NewDefinition(rec.ID,rec.Directory,project.ClusterAssignment{Mode:rec.Mode,Name:rec.ClusterName});err!=nil{
 		return fmt.Errorf("validate registered project: %w",err)
 	}
 	return nil
 }
 
-func (m *PersistentManager) reconcile(ctx context.Context,rec *catalogRecord)error{
+func (m *PersistentManager) reconcile(ctx context.Context,rec *catalogEntry)error{
 	if rec.Phase==phaseIdle{return nil}
 	a,err:=m.core.lookup(rec.ID)
 	if err!=nil{return err}
@@ -260,8 +296,8 @@ func (m *PersistentManager) ReconcileAll(ctx context.Context)error{
 	return errors.Join(errs...)
 }
 
-func (m *PersistentManager) status(rec catalogRecord)(State,error){
-	state:=State{ProjectID:rec.ID,Directory:rec.Directory,ClusterName:rec.ClusterName,
+func (m *PersistentManager) status(rec catalogEntry)(State,error){
+	state:=State{ProjectID:rec.ID,Directory:rec.Directory,ClusterName:rec.ClusterName,ClusterMode:rec.Mode,
 		Registered:true,Phase:string(rec.Phase),TiltPort:rec.TiltPort,RegistryPort:rec.RegistryPort}
 	a,err:=m.core.lookup(rec.ID)
 	if err!=nil{return state,err}
@@ -306,14 +342,10 @@ func (m *PersistentManager) stop(ctx context.Context,id string)error{
 		}
 	}
 	if err:=m.core.Stop(ctx,id);err!=nil{return err}
-	if rec.Phase==phaseIdle{
+	if rec.Phase==phaseIdle&&rec.Mode==project.Dedicated{
 		// Restored catalog records have no child-process handle; they can
 		// still stop a cluster after ownership checks in k3d.
-		spec,found,err:=m.core.existingSpec(ctx,rec.ClusterName)
-		if err!=nil{return err}
-		if found {
-			if err:=m.core.clusters.Stop(ctx,spec);err!=nil{return err}
-		}
+		if err:=m.core.clusters.stopExisting(ctx,rec.ClusterName);err!=nil{return err}
 	}
 	rec.Phase=phaseIdle
 	rec.PID=0
