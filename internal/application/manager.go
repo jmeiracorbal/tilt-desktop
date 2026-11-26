@@ -70,10 +70,9 @@ type entry struct {
 // locking, catalog persistence and shared clusters are outside its scope.
 type Manager struct {
 	mu sync.RWMutex
-	clusters Clusters
+	clusters *clusterManager
 	tilt Tilt
 	ports Ports
-	registries Registries
 	apps map[string]*entry
 	beforeTiltStart func(k3d.Spec, tilt.Config) error
 	checkPort func(string,uint16) error
@@ -83,7 +82,7 @@ func NewManager(clusters Clusters, tiltManager Tilt, ports Ports, registries Reg
 	if clusters==nil || tiltManager==nil || ports==nil || registries==nil {
 		return nil,errors.New("cluster manager, Tilt manager, port allocator and registry inspector are required")
 	}
-	return &Manager{clusters:clusters,tilt:tiltManager,ports:ports,registries:registries,apps:make(map[string]*entry)},nil
+	return &Manager{clusters:&clusterManager{runtime:clusters,registries:registries,ports:ports},tilt:tiltManager,ports:ports,apps:make(map[string]*entry)},nil
 }
 
 // Register validates the project's Tiltfile and derives a deterministic
@@ -111,29 +110,6 @@ func (m *Manager) lookup(id string) (*entry,error) {
 	return a,nil
 }
 
-func (m *Manager) existingSpec(ctx context.Context,name string) (k3d.Spec,bool,error) {
-	all,err:=m.clusters.List(ctx)
-	if err!=nil{return k3d.Spec{},false,fmt.Errorf("discover k3d clusters: %w",err)}
-	for _,c:=range all {
-		if c.Name!=name {continue}
-		port,err:=m.registries.RegistryPort(ctx,name)
-		if err!=nil{return k3d.Spec{},true,fmt.Errorf("discover registry port for %q: %w",name,err)}
-		if port==0{return k3d.Spec{},true,fmt.Errorf("registry for %q has no published port",name)}
-		return k3d.Spec{Name:name,ManagementID:name,RegistryPort:port},true,nil
-	}
-	return k3d.Spec{},false,nil
-}
-
-func (m *Manager) clusterSpec(ctx context.Context,a *entry) (k3d.Spec,bool,error) {
-	name:=a.definition.Cluster.Name
-	spec,exists,err:=m.existingSpec(ctx,name)
-	if err!=nil||exists{return spec,exists,err}
-	port,err:=m.ports.Available()
-	if err!=nil{return k3d.Spec{},false,fmt.Errorf("allocate registry port: %w",err)}
-	if port==0{return k3d.Spec{},false,errors.New("port allocator returned zero registry port")}
-	return k3d.Spec{Name:name,ManagementID:name,RegistryPort:port},false,nil
-}
-
 // Start creates or resumes a dedicated cluster, writes its credentials to a
 // private temporary file, then starts Tilt. When a newly created cluster
 // cannot be started it is rolled back; a preexisting one is never deleted.
@@ -153,40 +129,36 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 		}
 		a.active=false
 	}
-	spec,existed,err:=m.clusterSpec(ctx,a)
+	spec,existed,credentials,err:=m.clusters.prepare(ctx,a.definition.Cluster.Name,func(spec k3d.Spec)error{
+		if m.checkPort!=nil {
+			if err:=m.checkPort(id,spec.RegistryPort);err!=nil{return err}
+			if a.config.Port!=0&&a.config.Port==spec.RegistryPort{return fmt.Errorf("registry and Tilt port collide: %d",spec.RegistryPort)}
+		}
+		return nil
+	})
 	if err!=nil{return err}
-	if m.checkPort!=nil {
-		if err:=m.checkPort(id,spec.RegistryPort);err!=nil{return err}
-		if a.config.Port!=0&&a.config.Port==spec.RegistryPort{return fmt.Errorf("registry and Tilt port collide: %d",spec.RegistryPort)}
-	}
-	if err:=m.clusters.Ensure(ctx,spec);err!=nil{
-		return m.rollback(spec,existed,fmt.Errorf("prepare cluster: %w",err))
-	}
-	credentials,err:=m.clusters.Kubeconfig(ctx,spec)
-	if err!=nil{return m.rollback(spec,existed,fmt.Errorf("read private kubeconfig: %w",err))}
-	if len(credentials)==0{return m.rollback(spec,existed,errors.New("empty private kubeconfig"))}
 	file,err:=os.CreateTemp("","tilt-desktop-kubeconfig-*")
-	if err!=nil{return m.rollback(spec,existed,fmt.Errorf("create private kubeconfig: %w",err))}
+	if err!=nil{return m.clusters.rollback(spec,existed,fmt.Errorf("create private kubeconfig: %w",err))}
 	path:=file.Name()
 	if err:=protectPrivateFile(path);err!=nil {
 		_ = file.Close()
 		_ = os.Remove(path)
-		return m.rollback(spec,existed,fmt.Errorf("protect private kubeconfig: %w",err))
+		return m.clusters.rollback(spec,existed,fmt.Errorf("protect private kubeconfig: %w",err))
 	}
 	if _,err:=file.Write(credentials);err!=nil {
 		_ = file.Close()
 		_ = os.Remove(path)
-		return m.rollback(spec,existed,fmt.Errorf("write private kubeconfig: %w",err))
+		return m.clusters.rollback(spec,existed,fmt.Errorf("write private kubeconfig: %w",err))
 	}
 	if err:=file.Close();err!=nil {
 		_ = os.Remove(path)
-		return m.rollback(spec,existed,fmt.Errorf("close private kubeconfig: %w",err))
+		return m.clusters.rollback(spec,existed,fmt.Errorf("close private kubeconfig: %w",err))
 	}
 	port:=a.config.Port
 	if port!=0 {
 		if !loopbackPortFree(port){
 			_ = os.Remove(path)
-			return m.rollback(spec,existed,fmt.Errorf("previously assigned Tilt port %d is unavailable",port))
+			return m.clusters.rollback(spec,existed,fmt.Errorf("previously assigned Tilt port %d is unavailable",port))
 		}
 	}else{
 		var err error
@@ -194,41 +166,29 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 		if err!=nil || port==0 {
 			_ = os.Remove(path)
 			if err==nil {err=errors.New("port allocator returned zero Tilt port")}
-			return m.rollback(spec,existed,fmt.Errorf("allocate Tilt HTTP port: %w",err))
+			return m.clusters.rollback(spec,existed,fmt.Errorf("allocate Tilt HTTP port: %w",err))
 		}
 	}
 	if m.checkPort!=nil {
 		var conflict error
 		if port==spec.RegistryPort{conflict=fmt.Errorf("registry and Tilt port collide: %d",port)}else{conflict=m.checkPort(id,port)}
 		if conflict!=nil{
-			return errors.Join(m.rollback(spec,existed,conflict),os.Remove(path))
+			return errors.Join(m.clusters.rollback(spec,existed,conflict),os.Remove(path))
 		}
 	}
 	config:=tilt.Config{ProjectID:id,Directory:a.definition.Directory,Kubeconfig:path,ClusterName:spec.Name,Port:port}
 	if m.beforeTiltStart!=nil {
 		if err:=m.beforeTiltStart(spec,config);err!=nil {
 			_ = os.Remove(path)
-			return m.rollback(spec,existed,fmt.Errorf("record Tilt startup: %w",err))
+			return m.clusters.rollback(spec,existed,fmt.Errorf("record Tilt startup: %w",err))
 		}
 	}
 	if err:=m.tilt.Start(ctx,config);err!=nil {
 		removeErr:=os.Remove(path)
-		return errors.Join(m.rollback(spec,existed,fmt.Errorf("start Tilt: %w",err)),removeErr)
+		return errors.Join(m.clusters.rollback(spec,existed,fmt.Errorf("start Tilt: %w",err)),removeErr)
 	}
 	a.spec,a.config,a.active=spec,config,true
 	return nil
-}
-
-// rollback uses an independent bounded context so canceled starts cannot
-// abandon a cluster that this attempt created.
-func (m *Manager) rollback(spec k3d.Spec,existed bool,cause error) error {
-	if existed{return cause}
-	ctx,cancel:=context.WithTimeout(context.Background(),cleanupTimeout)
-	defer cancel()
-	if err:=m.clusters.Delete(ctx,spec);err!=nil {
-		return errors.Join(cause,fmt.Errorf("rollback newly created cluster: %w",err))
-	}
-	return cause
 }
 
 // Stop interrupts Tilt, then stops the dedicated cluster. It does not run
@@ -245,7 +205,7 @@ func (m *Manager) Stop(ctx context.Context,id string) error {
 func (m *Manager) stop(ctx context.Context,a *entry) error {
 	if !a.active{return nil}
 	if err:=m.tilt.Stop(ctx,a.definition.ID);err!=nil{return fmt.Errorf("stop Tilt: %w",err)}
-	if err:=m.clusters.Stop(ctx,a.spec);err!=nil{return fmt.Errorf("stop cluster: %w",err)}
+	if err:=m.clusters.stop(ctx,a.spec);err!=nil{return err}
 	if err:=os.Remove(a.config.Kubeconfig);err!=nil&&!errors.Is(err,os.ErrNotExist) {
 		return fmt.Errorf("remove private kubeconfig: %w",err)
 	}
@@ -263,11 +223,7 @@ func (m *Manager) Delete(ctx context.Context,id string,confirmed bool) error {
 	defer a.mu.Unlock()
 	if a.deleted{return fmt.Errorf("%w: %s",ErrNotRegistered,id)}
 	if err:=m.stop(ctx,a);err!=nil{return err}
-	spec,exists,err:=m.existingSpec(ctx,a.definition.Cluster.Name)
-	if err!=nil{return err}
-	if exists {
-		if err:=m.clusters.Delete(ctx,spec);err!=nil{return fmt.Errorf("delete cluster: %w",err)}
-	}
+	if err:=m.clusters.deleteExisting(ctx,a.definition.Cluster.Name);err!=nil{return err}
 	a.deleted=true
 	m.mu.Lock()
 	delete(m.apps,id)
