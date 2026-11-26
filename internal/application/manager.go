@@ -18,6 +18,7 @@ import (
 var (
 	ErrNotRegistered = errors.New("application is not registered")
 	ErrConfirmationRequired = errors.New("application deletion requires confirmation")
+	ErrSharedLifecycleUnsupported = errors.New("shared cluster lifecycle is not supported yet")
 )
 
 // Clusters is the lifecycle contract implemented by the k3d client.
@@ -49,6 +50,7 @@ type State struct {
 	ProjectID string
 	Directory string
 	ClusterName string
+	ClusterMode project.ClusterMode
 	Registered bool
 	Phase string
 	Running bool
@@ -75,7 +77,8 @@ type Manager struct {
 	ports Ports
 	apps map[string]*entry
 	beforeTiltStart func(k3d.Spec, tilt.Config) error
-	checkPort func(string,uint16) error
+	checkRegistryPort func(string,uint16) error
+	checkTiltPort func(string,uint16) error
 }
 
 func NewManager(clusters Clusters, tiltManager Tilt, ports Ports, registries Registries) (*Manager,error) {
@@ -98,7 +101,8 @@ func (m *Manager) Register(directory string) (project.Definition,error) {
 	if err!=nil{return project.Definition{},err}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _,exists:=m.apps[id];!exists {m.apps[id]=&entry{definition:definition}}
+	if existing,exists:=m.apps[id];exists{return existing.definition,nil}
+	m.apps[id]=&entry{definition:definition}
 	return definition,nil
 }
 
@@ -119,6 +123,7 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.deleted{return fmt.Errorf("%w: %s",ErrNotRegistered,id)}
+	if a.definition.Cluster.Mode!=project.Dedicated{return ErrSharedLifecycleUnsupported}
 	if err:=ctx.Err();err!=nil{return err}
 	if a.active {
 		state,err:=m.tilt.Status(id)
@@ -130,8 +135,8 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 		a.active=false
 	}
 	spec,existed,credentials,err:=m.clusters.prepare(ctx,a.definition.Cluster.Name,func(spec k3d.Spec)error{
-		if m.checkPort!=nil {
-			if err:=m.checkPort(id,spec.RegistryPort);err!=nil{return err}
+		if m.checkRegistryPort!=nil {
+			if err:=m.checkRegistryPort(spec.Name,spec.RegistryPort);err!=nil{return err}
 			if a.config.Port!=0&&a.config.Port==spec.RegistryPort{return fmt.Errorf("registry and Tilt port collide: %d",spec.RegistryPort)}
 		}
 		return nil
@@ -169,9 +174,9 @@ func (m *Manager) Start(ctx context.Context,id string) error {
 			return m.clusters.rollback(spec,existed,fmt.Errorf("allocate Tilt HTTP port: %w",err))
 		}
 	}
-	if m.checkPort!=nil {
+	if m.checkTiltPort!=nil {
 		var conflict error
-		if port==spec.RegistryPort{conflict=fmt.Errorf("registry and Tilt port collide: %d",port)}else{conflict=m.checkPort(id,port)}
+		if port==spec.RegistryPort{conflict=fmt.Errorf("registry and Tilt port collide: %d",port)}else{conflict=m.checkTiltPort(id,port)}
 		if conflict!=nil{
 			return errors.Join(m.clusters.rollback(spec,existed,conflict),os.Remove(path))
 		}
@@ -199,6 +204,7 @@ func (m *Manager) Stop(ctx context.Context,id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.deleted{return fmt.Errorf("%w: %s",ErrNotRegistered,id)}
+	if a.definition.Cluster.Mode!=project.Dedicated{return ErrSharedLifecycleUnsupported}
 	return m.stop(ctx,a)
 }
 
@@ -222,6 +228,7 @@ func (m *Manager) Delete(ctx context.Context,id string,confirmed bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.deleted{return fmt.Errorf("%w: %s",ErrNotRegistered,id)}
+	if a.definition.Cluster.Mode!=project.Dedicated{return ErrSharedLifecycleUnsupported}
 	if err:=m.stop(ctx,a);err!=nil{return err}
 	if err:=m.clusters.deleteExisting(ctx,a.definition.Cluster.Name);err!=nil{return err}
 	a.deleted=true
@@ -238,7 +245,7 @@ func (m *Manager) Status(id string) (State,error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.deleted{return State{},fmt.Errorf("%w: %s",ErrNotRegistered,id)}
-	result:=State{ProjectID:id,Directory:a.definition.Directory,ClusterName:a.definition.Cluster.Name,Registered:true}
+	result:=State{ProjectID:id,Directory:a.definition.Directory,ClusterName:a.definition.Cluster.Name,ClusterMode:a.definition.Cluster.Mode,Registered:true}
 	if !a.active{return result,nil}
 	state,err:=m.tilt.Status(id)
 	if err!=nil{return State{},fmt.Errorf("read Tilt status: %w",err)}
