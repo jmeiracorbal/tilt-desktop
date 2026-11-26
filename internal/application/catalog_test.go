@@ -100,3 +100,16 @@ func TestCatalogRejectsDuplicatePortAssignments(t *testing.T) {
 	second.RegistryPort=first.TiltPort
 	if err:=store.upsert(second);err!=nil{t.Fatalf("deleted assignment not released: %v",err)}
 }
+
+func TestCatalogRejectsPersistedPortCollision(t *testing.T) {
+	first:=sampleCatalogRecord(t)
+	second:=sampleCatalogRecord(t)
+	first.TiltPort=10351
+	second.RegistryPort=10351
+	path:=filepath.Join(t.TempDir(),"catalog.json")
+	payload,err:=json.Marshal(catalogFile{Version:catalogVersion,Records:[]catalogRecord{first,second}})
+	if err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(path,payload,0600);err!=nil{t.Fatal(err)}
+	if err:=protectPrivateFile(path);err!=nil{t.Fatal(err)}
+	if _,err:=openCatalog(path);err==nil||!strings.Contains(err.Error(),"assigned to project"){t.Fatalf("expected persisted port conflict, got %v",err)}
+}
