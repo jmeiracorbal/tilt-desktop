@@ -255,6 +255,7 @@ func TestSharedClusterLifecycle(t *testing.T) {
 	second,err:=m.RegisterShared(secondDir,name)
 	if err!=nil{t.Fatal(err)}
 	if _,err:=m.RegisterShared(dir,"td-shared-other");!errors.Is(err,ErrClusterAssignmentConflict){t.Fatalf("assignment changed: %v",err)}
+	if _,err:=m.Register(dir);!errors.Is(err,ErrClusterAssignmentConflict){t.Fatalf("dedicated registration silently retained shared assignment: %v",err)}
 	if err:=m.Start(ctx,first.ID);err!=nil{t.Fatal(err)}
 	if err:=m.Start(ctx,second.ID);err!=nil{t.Fatal(err)}
 	if len(tm.configs)!=2||ports.index!=3||c.spec.Name!=name{t.Fatalf("unexpected allocations: %+v %d",tm.configs,ports.index)}
