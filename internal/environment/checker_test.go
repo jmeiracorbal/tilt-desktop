@@ -109,6 +109,10 @@ func TestDiagnosticProcessHelper(t *testing.T) {
 	case "version":
 		fmt.Fprintln(os.Stdout, "tool version 1.2.3")
 		os.Exit(0)
+	case "structured":
+		fmt.Fprintln(os.Stdout, `{"serverVersion":"28.3.0","osType":"linux"}`)
+		fmt.Fprintln(os.Stderr, "daemon warning")
+		os.Exit(0)
 	case "failure":
 		fmt.Fprintln(os.Stderr, "probe failed")
 		os.Exit(7)
@@ -137,6 +141,10 @@ func TestRunCommand(t *testing.T) {
 	version, err := run(ctx, "version")
 	if err != nil || version != "tool version 1.2.3" {
 		t.Fatalf("version: %q, %v", version, err)
+	}
+	structured, err := run(ctx, "structured")
+	if err != nil || structured != `{"serverVersion":"28.3.0","osType":"linux"}` {
+		t.Fatalf("stderr contaminated structured output: %q, %v", structured, err)
 	}
 	_, err = run(ctx, "failure")
 	var exitErr *exec.ExitError
