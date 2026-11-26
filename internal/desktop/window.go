@@ -23,6 +23,10 @@ import (
 // Backend describes the Go application operations used by the window.
 type Backend interface {
 	Register(string) (project.Definition, error)
+	RegisterShared(string, string) (project.Definition, error)
+	ListSharedClusters() ([]application.SharedClusterState, error)
+	StopSharedCluster(context.Context, string) error
+	DeleteSharedCluster(context.Context, string, bool) error
 	List() []application.State
 	Status(string) (application.State, error)
 	ReconcileAll(context.Context) error
@@ -49,6 +53,7 @@ type view struct {
 	metadata *widget.Label
 	notice *widget.Label
 	add *widget.Button
+	shared *widget.Button
 	start *widget.Button
 	stop *widget.Button
 	delete *widget.Button
@@ -96,6 +101,7 @@ func NewWindow(app fyne.App, backend Backend) (fyne.Window, error) {
 	}
 
 	v.add = widget.NewButton("Add project", v.chooseFolder)
+	v.shared = widget.NewButton("Shared clusters", v.showSharedClusters)
 	v.refresh = widget.NewButton("Refresh", v.refreshAll)
 	v.start = widget.NewButton("Start", func() {
 		id := v.selected
@@ -111,7 +117,7 @@ func NewWindow(app fyne.App, backend Backend) (fyne.Window, error) {
 
 	heading := container.NewBorder(nil, nil, nil, container.NewHBox(v.add, v.refresh),
 		widget.NewLabelWithStyle("Tilt Desktop", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
-	sidebar := container.NewBorder(heading, nil, nil, nil, v.projects)
+	sidebar := container.NewBorder(heading, v.shared, nil, nil, v.projects)
 
 	actions := container.NewHBox(v.start, v.stop, v.delete)
 	details := container.NewVBox(v.title, v.metadata, actions)
@@ -135,11 +141,8 @@ func (v *view) chooseFolder() {
 	dialog.ShowFolderOpen(func(directory fyne.ListableURI, err error) {
 		if err != nil { dialog.ShowError(err, v.window); return }
 		if directory == nil { return }
-		path := directory.Path()
-		v.execute("Registering project", func(_ context.Context) error {
-			_, err := v.backend.Register(path)
-			return err
-		}, nil)
+		if v.busy { return }
+		v.chooseCluster(directory.Path())
 	}, v.window)
 }
 
@@ -148,11 +151,8 @@ func (v *view) confirmDelete() {
 	state, ok := v.selectedState()
 	if !ok || !canDelete(state) { return }
 	id := state.ProjectID
-	message := fmt.Sprintf(
-		"Delete %q and its dedicated k3d cluster?\n\nThis permanently removes the cluster and its Kubernetes resources. The project directory is not deleted.",
-		filepath.Base(state.Directory),
-	)
-	dialog.ShowConfirm("Delete project and cluster", message, func(confirmed bool) {
+	title, message := projectDeletionPrompt(state)
+	dialog.ShowConfirm(title, message, func(confirmed bool) {
 		if !confirmed { return }
 		v.execute("Deleting project", func(ctx context.Context) error {
 			return v.backend.Delete(ctx, id, true)
@@ -239,8 +239,8 @@ func (v *view) showSelection() {
 	}
 	v.title.SetText(filepath.Base(state.Directory))
 	v.metadata.SetText(fmt.Sprintf(
-		"%s\nCluster: %s\nSession: %s\nTilt port: %d    Registry port: %d",
-		state.Directory, state.ClusterName, state.Phase, state.TiltPort, state.RegistryPort,
+		"%s\nCluster: %s (%s)\nSession: %s\nTilt port: %d    Registry port: %d",
+		state.Directory, state.ClusterName, state.ClusterMode, state.Phase, state.TiltPort, state.RegistryPort,
 	))
 	v.updateButtons()
 	if state.Running && state.Phase == "running" { v.loadObservations(state.ProjectID) }
@@ -277,6 +277,7 @@ func (v *view) loadObservations(id string) {
 func (v *view) updateButtons() {
 	state, ok := v.selectedState()
 	setEnabled(v.add, !v.busy)
+	setEnabled(v.shared, !v.busy)
 	setEnabled(v.refresh, !v.busy)
 	setEnabled(v.start, !v.busy && ok && canStart(state))
 	setEnabled(v.stop, !v.busy && ok && canStop(state))
@@ -301,7 +302,7 @@ func (v *view) confirmClose() {
 		return
 	}
 	dialog.ShowConfirm("Stop applications and quit",
-		"Stop managed Tilt processes and their dedicated clusters before closing?\n\nDeployed workloads remain in their clusters.",
+		"Stop managed Tilt processes and their dedicated clusters before closing?\n\nShared clusters stay running. Deployed workloads remain in their clusters.",
 		func(confirmed bool) {
 			if !confirmed { return }
 			v.execute("Stopping applications", func(ctx context.Context) error {
