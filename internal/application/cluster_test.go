@@ -17,17 +17,17 @@ func TestClusterLifecycleIndependentOfProject(t *testing.T) {
 	registries := &fakeRegistries{port: 5111}
 	manager := &clusterManager{runtime: runtime, registries: registries, ports: ports}
 	const name = "td-shared-development"
-	validate := func(spec k3d.Spec) error {
+	validate := func(spec k3d.Spec,_ bool) error {
 		if spec.Name != name || spec.ManagementID != name || spec.RegistryPort != 5111 {
 			t.Fatalf("unexpected cluster identity: %+v", spec)
 		}
 		return nil
 	}
-	spec, existed, credentials, err := manager.prepare(ctx, name, validate)
+	spec, existed, credentials, err := manager.prepare(ctx, name, 0, validate)
 	if err != nil || existed || len(credentials) == 0 {
 		t.Fatalf("prepare new cluster: %+v %t %v", spec, existed, err)
 	}
-	reused, existed, _, err := manager.prepare(ctx, name, validate)
+	reused, existed, _, err := manager.prepare(ctx, name, 0, validate)
 	if err != nil || !existed || reused != spec || ports.index != 1 {
 		t.Fatalf("reuse cluster: %+v %t %v", reused, existed, err)
 	}
@@ -58,7 +58,7 @@ func TestClusterAssignmentRejectedBeforeRuntimeMutation(t *testing.T) {
 		ports: &fakePorts{values: []uint16{5111}},
 	}
 	conflict := errors.New("assignment conflicts with existing cluster")
-	_, _, _, err := manager.prepare(context.Background(), "development", func(k3d.Spec) error {
+	_, _, _, err := manager.prepare(context.Background(), "development", 0, func(k3d.Spec) error {
 		return conflict
 	})
 	if !errors.Is(err, conflict) {
