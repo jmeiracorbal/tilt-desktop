@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jmeiracorbal/tilt-desktop/internal/application"
+	"github.com/jmeiracorbal/tilt-desktop/internal/environment"
 	"github.com/jmeiracorbal/tilt-desktop/internal/k3d"
 	"github.com/jmeiracorbal/tilt-desktop/internal/project"
 	"github.com/jmeiracorbal/tilt-desktop/internal/tilt"
@@ -40,7 +41,7 @@ func TestSharedClusterLifecycle(t *testing.T) {
 	supervisor, err := tilt.NewManager(tilt.ExecLauncher{Binary: "tilt"})
 	if err != nil { t.Fatal(err) }
 	catalog := filepath.Join(root, "catalog.json")
-	manager, err := application.NewPersistentManager(client, supervisor, application.NetPorts{}, client, supervisor, catalog)
+	manager, err := application.NewPersistentManager(client, supervisor, application.NetPorts{}, client, supervisor, environment.NewChecker(), catalog)
 	if err != nil { t.Fatal(err) }
 	defer manager.Close()
 
@@ -112,7 +113,7 @@ func TestSharedClusterLifecycle(t *testing.T) {
 	if err := manager.StopSharedCluster(ctx,name); err != nil { t.Fatal(err) }
 	if err := manager.Close(); err != nil { t.Fatal(err) }
 
-	reopened, err := application.NewPersistentManager(client,supervisor,application.NetPorts{},client,supervisor,catalog)
+	reopened, err := application.NewPersistentManager(client,supervisor,application.NetPorts{},client,supervisor,environment.NewChecker(),catalog)
 	if err != nil { t.Fatal(err) }
 	defer reopened.Close()
 	restored, err := reopened.Status(ids[1])
