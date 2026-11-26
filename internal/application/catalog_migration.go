@@ -11,10 +11,19 @@ import (
 // performed once, under the manager's exclusive lock, before any operations.
 type catalogV1 struct {
 	Version int `json:"version"`
-	Records []struct {
-		catalogRecord
-		RegistryPort uint16 `json:"registryPort,omitempty"`
-	} `json:"records"`
+	Records []catalogV1Record `json:"records"`
+}
+
+// The original schema is frozen independently of future catalogRecord changes.
+type catalogV1Record struct {
+	ID           string `json:"id"`
+	Directory    string `json:"directory"`
+	ClusterName  string `json:"clusterName"`
+	RegistryPort uint16 `json:"registryPort,omitempty"`
+	TiltPort     uint16 `json:"tiltPort,omitempty"`
+	Kubeconfig   string `json:"kubeconfig,omitempty"`
+	Phase        phase  `json:"phase"`
+	PID          int64  `json:"pid,omitempty"`
 }
 
 func decodeCatalog(payload []byte) (catalogFile, bool, error) {
@@ -39,7 +48,10 @@ func decodeCatalog(payload []byte) (catalogFile, bool, error) {
 			Clusters: make([]clusterRecord, 0, len(old.Records)),
 		}
 		for _, rec := range old.Records {
-			file.Projects = append(file.Projects, rec.catalogRecord)
+			file.Projects = append(file.Projects, catalogRecord{
+				ID: rec.ID, Directory: rec.Directory, ClusterName: rec.ClusterName,
+				TiltPort: rec.TiltPort, Kubeconfig: rec.Kubeconfig, Phase: rec.Phase, PID: rec.PID,
+			})
 			file.Clusters = append(file.Clusters, clusterRecord{
 				Name: rec.ClusterName, Mode: project.Dedicated, RegistryPort: rec.RegistryPort,
 			})
