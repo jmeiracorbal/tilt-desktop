@@ -79,6 +79,8 @@ CGO_ENABLED=0 go build -o tilt-desktop-check ./cmd/tilt-desktop-check
 
 The command emits a JSON report with `ready` and `checks`, including paths, versions and diagnostic errors. Exit status 0 means all probes passed, 1 means environment requirements are not satisfied, and 2 indicates command usage or output failure. Run the evaluator in the intended desktop user's environment, not an unrelated privileged installation context.
 
+The persistent application manager re-evaluates the required dependencies before each external operation. Starting a project requires Docker, k3d, Tilt and a reachable Linux-container daemon. Dedicated project stop/deletion and explicit shared cluster stop/deletion require Docker and k3d plus the daemon. Reading Tilt resources or logs requires Tilt. Shared project stop/removal uses the owned process handle and does not require Docker; catalog registration, listing and local status remain available without external tools. Reconciliation preserves its conservative session-identity checks even when the Tilt API is unavailable. An unavailable required dependency blocks the corresponding operation before runtime mutation; results are not cached.
+
 The future curl-based installation script and native installers must consume this same preflight rather than implementing independent dependency detection. A drag-and-drop DMG does not run installation hooks; it requires an explicit preflight launcher or first-launch check. No installer or public release is published yet. The evaluator does not install tools, change permissions or contexts, or guarantee version compatibility and successful cluster provisioning.
 
 ### Native build artifacts
