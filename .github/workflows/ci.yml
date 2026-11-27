@@ -27,8 +27,8 @@ jobs:
           git diff --exit-code -- go.mod go.sum
       - name: Unit and headless GUI tests
         run: go test -tags ci -count=1 ./...
-      - name: Application race detection
-        run: go test -race -count=1 ./internal/application
+      - name: Application and environment race detection
+        run: go test -race -count=1 ./internal/application ./internal/environment
       - name: Vet
         run: go vet -tags ci ./...
       - name: Build native Linux desktop

@@ -26,18 +26,22 @@ jobs:
             runner: ubuntu-24.04
             goos: linux
             archive: TiltDesktop-linux-amd64.tar.xz
+            checker: tilt-desktop-check
           - target: macos-arm64
             runner: macos-15
             goos: darwin
             archive: TiltDesktop-macos-arm64.zip
+            checker: tilt-desktop-check
           - target: macos-amd64
             runner: macos-15-intel
             goos: darwin
             archive: TiltDesktop-macos-amd64.zip
+            checker: tilt-desktop-check
           - target: windows-amd64
             runner: windows-2025
             goos: windows
             archive: TiltDesktop-windows-amd64.zip
+            checker: tilt-desktop-check.exe
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -59,6 +63,11 @@ jobs:
 
       - name: Verify Go source and dependencies
         run: go test -tags ci -count=1 ./...
+
+      - name: Build headless installer preflight
+        env:
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o ${{ matrix.checker }} ./cmd/tilt-desktop-check
 
       - name: Install pinned Fyne packaging tool
         run: go install fyne.io/tools/cmd/fyne@v1.7.4
@@ -92,6 +101,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tilt-desktop-${{ matrix.target }}
-          path: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.checker }}
           if-no-files-found: error
           retention-days: 14

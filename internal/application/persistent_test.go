@@ -10,9 +10,20 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jmeiracorbal/tilt-desktop/internal/environment"
 	"github.com/jmeiracorbal/tilt-desktop/internal/project"
 	"github.com/jmeiracorbal/tilt-desktop/internal/tilt"
 )
+
+type fakeRequirements struct {
+	calls []environment.Requirement
+	err error
+}
+func (f *fakeRequirements) Require(ctx context.Context,r environment.Requirement)error{
+	f.calls=append(f.calls,r)
+	if err:=ctx.Err();err!=nil{return err}
+	return f.err
+}
 
 type fakeObserver struct {
 	session tilt.Session
@@ -29,7 +40,7 @@ func persistentFixture(t *testing.T)(*PersistentManager,*fakeCluster,*fakeTilt,*
 	_,c,tm,p,r,dir:=setup(t)
 	observer:=&fakeObserver{err:errors.New("Tilt session endpoint unavailable")}
 	path:=filepath.Join(t.TempDir(),"state","catalog.json")
-	m,err:=NewPersistentManager(c,tm,p,r,observer,path)
+	m,err:=NewPersistentManager(c,tm,p,r,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatal(err)}
 	t.Cleanup(func(){if err:=m.Close();err!=nil{t.Error(err)}})
 	return m,c,tm,p,r,observer,dir,path
@@ -49,7 +60,7 @@ func TestPersistentRegistrationAndStopSurviveRestart(t *testing.T){
 	}
 	if err:=m.Stop(context.Background(),def.ID);err!=nil{t.Fatal(err)}
 	if err:=m.Close();err!=nil{t.Fatal(err)}
-	reloaded,err:=NewPersistentManager(c,tm,p,r,observer,path)
+	reloaded,err:=NewPersistentManager(c,tm,p,r,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatal(err)}
 	t.Cleanup(func(){if err:=reloaded.Close();err!=nil{t.Error(err)}})
 	list:=reloaded.List()
@@ -80,7 +91,7 @@ func TestPersistentOrphanCannotBeStartedOrDeleted(t *testing.T){
 	observer.session=tilt.Session{PID:rec.PID,StartTime:"2026-11-19T03:00:00Z",TiltfilePath:filepath.Join(dir,"Tiltfile")}
 	observer.err=nil
 	if err:=m.Close();err!=nil{t.Fatal(err)}
-	second,err:=NewPersistentManager(c,tm,p,r,observer,path)
+	second,err:=NewPersistentManager(c,tm,p,r,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatal(err)}
 	t.Cleanup(func(){if err:=second.Close();err!=nil{t.Error(err)}})
 	state,err:=second.Reconcile(context.Background(),def.ID)
@@ -132,7 +143,7 @@ func TestReconcileLeavesUnknownProcessUntouched(t *testing.T){
 
 func TestPersistentCatalogRefusesUntrustedPath(t *testing.T){
 	_,c,tm,p,r,observer,_,_:=persistentFixture(t)
-	if _,err:=NewPersistentManager(c,tm,p,r,observer,"relative/catalog.json");err==nil{
+	if _,err:=NewPersistentManager(c,tm,p,r,observer,&fakeRequirements{},"relative/catalog.json");err==nil{
 		t.Fatal("accepted relative catalog")
 	}
 }
@@ -156,7 +167,7 @@ func TestPersistedTiltPortConflictStopsBeforeProcessLaunch(t *testing.T){
 	rec.TiltPort=taken
 	if err:=m.store.upsert(rec);err!=nil{t.Fatal(err)}
 	if err:=m.Close();err!=nil{t.Fatal(err)}
-	restored,err:=NewPersistentManager(c,tm,p,r,observer,path)
+	restored,err:=NewPersistentManager(c,tm,p,r,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatal(err)}
 	t.Cleanup(func(){if err:=restored.Close();err!=nil{t.Error(err)}})
 	err=restored.Start(context.Background(),def.ID)
@@ -171,13 +182,13 @@ func TestPersistentManagerExclusiveOwnership(t *testing.T) {
 	m,c,tm,p,r,observer,dir,path:=persistentFixture(t)
 	def,err:=m.Register(dir)
 	if err!=nil{t.Fatal(err)}
-	other,err:=NewPersistentManager(c,tm,p,r,observer,path)
+	other,err:=NewPersistentManager(c,tm,p,r,observer,&fakeRequirements{},path)
 	if other!=nil{_ = other.Close()}
 	if !errors.Is(err,ErrInstanceRunning){t.Fatalf("expected exclusive ownership, got %v",err)}
 	if err:=m.Close();err!=nil{t.Fatal(err)}
 	if _,err:=m.Register(dir);!errors.Is(err,ErrManagerClosed){t.Fatalf("closed manager register: %v",err)}
 	if err:=m.Start(context.Background(),def.ID);!errors.Is(err,ErrManagerClosed){t.Fatalf("closed manager start: %v",err)}
-	other,err=NewPersistentManager(c,tm,p,r,observer,path)
+	other,err=NewPersistentManager(c,tm,p,r,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatal(err)}
 	defer other.Close()
 	if got:=other.List();len(got)!=1||got[0].ProjectID!=def.ID{t.Fatalf("catalog not preserved: %+v",got)}
@@ -224,7 +235,7 @@ func TestPersistentConcurrentRegistrationSurvivesReopen(t *testing.T) {
 	for err:=range errs{if err!=nil{t.Fatal(err)}}
 	if got:=len(m.List());got!=count{t.Fatalf("registered %d projects, want %d",got,count)}
 	if err:=m.Close();err!=nil{t.Fatal(err)}
-	reopened,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	reopened,err:=NewPersistentManager(c,tm,ports,registries,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatal(err)}
 	defer reopened.Close()
 	if got:=len(reopened.List());got!=count{t.Fatalf("restored %d projects, want %d",got,count)}
@@ -235,11 +246,11 @@ func TestPersistentConstructorFailureReleasesOwnership(t *testing.T) {
 	if err:=m.Close();err!=nil{t.Fatal(err)}
 	if err:=os.WriteFile(path,[]byte("invalid catalog"),0600);err!=nil{t.Fatal(err)}
 	if err:=protectPrivateFile(path);err!=nil{t.Fatal(err)}
-	failed,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	failed,err:=NewPersistentManager(c,tm,ports,registries,observer,&fakeRequirements{},path)
 	if failed!=nil{_ = failed.Close();t.Fatal("opened corrupt catalog")}
 	if err==nil||errors.Is(err,ErrInstanceRunning){t.Fatalf("unexpected constructor error: %v",err)}
 	if err:=os.Remove(path);err!=nil{t.Fatal(err)}
-	recovered,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	recovered,err:=NewPersistentManager(c,tm,ports,registries,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatalf("constructor leaked ownership: %v",err)}
 	defer recovered.Close()
 }
@@ -271,7 +282,7 @@ func TestSharedClusterLifecycle(t *testing.T) {
 	if err:=m.DeleteSharedCluster(ctx,name,true);!errors.Is(err,ErrClusterInUse){t.Fatalf("idle member was ignored: %v",err)}
 	if err:=m.Delete(ctx,second.ID,true);err!=nil{t.Fatal(err)}
 	if err:=m.Close();err!=nil{t.Fatal(err)}
-	reopened,err:=NewPersistentManager(c,tm,ports,registries,observer,path)
+	reopened,err:=NewPersistentManager(c,tm,ports,registries,observer,&fakeRequirements{},path)
 	if err!=nil{t.Fatal(err)}
 	defer reopened.Close()
 	clusters,err:=reopened.ListSharedClusters()
