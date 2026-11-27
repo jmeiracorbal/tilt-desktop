@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -106,3 +107,102 @@ jobs:
             ${{ matrix.checker }}
           if-no-files-found: error
           retention-days: 14
+
+  release-assets:
+    name: Verify release assets
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download native packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tilt-desktop-*
+          path: packages
+
+      - name: Assemble release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release
+          for target in linux-amd64 macos-arm64 macos-amd64 windows-amd64; do
+            case "$target" in
+              linux-amd64) archive="TiltDesktop-$target.tar.xz"; checker=tilt-desktop-check; suffix='' ;;
+              windows-amd64) archive="TiltDesktop-$target.zip"; checker=tilt-desktop-check.exe; suffix='.exe' ;;
+              macos-*) archive="TiltDesktop-$target.zip"; checker=tilt-desktop-check; suffix='' ;;
+            esac
+            test -s "packages/tilt-desktop-$target/$archive"
+            test -s "packages/tilt-desktop-$target/$checker"
+            cp -- "packages/tilt-desktop-$target/$archive" "release/$archive"
+            cp -- "packages/tilt-desktop-$target/$checker" "release/tilt-desktop-check-$target$suffix"
+          done
+
+      - name: Generate and verify SHA-256 manifest
+        working-directory: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum -- TiltDesktop-* tilt-desktop-check-* > SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 8
+          sha256sum --strict --check SHA256SUMS
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: tilt-desktop-release-assets
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish tagged release
+    needs: release-assets
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !github.event.deleted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Download verified release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: tilt-desktop-release-assets
+          path: release
+
+      - name: Verify assets before publication
+        working-directory: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(wc -l < SHA256SUMS)" -eq 8
+          sha256sum --strict --check SHA256SUMS
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" release/TiltDesktop-* release/tilt-desktop-check-* release/SHA256SUMS \
+            --verify-tag --title "Tilt Desktop $GITHUB_REF_NAME" --generate-notes \
+            --notes "Native builds are unsigned and not notarized. Docker, k3d and Tilt must be installed separately." \
+            "${flags[@]}"

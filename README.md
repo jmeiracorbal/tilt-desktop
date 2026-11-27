@@ -81,7 +81,7 @@ The command emits a JSON report with `ready` and `checks`, including paths, vers
 
 The persistent application manager re-evaluates the required dependencies before each external operation. Starting a project requires Docker, k3d, Tilt and a reachable Linux-container daemon. Dedicated project stop/deletion and explicit shared cluster stop/deletion require Docker and k3d plus the daemon. Reading Tilt resources or logs requires Tilt. Shared project stop/removal uses the owned process handle and does not require Docker; catalog registration, listing and local status remain available without external tools. Reconciliation preserves its conservative session-identity checks even when the Tilt API is unavailable. An unavailable required dependency blocks the corresponding operation before runtime mutation; results are not cached.
 
-The future curl-based installation script and native installers must consume this same preflight rather than implementing independent dependency detection. A drag-and-drop DMG does not run installation hooks; it requires an explicit preflight launcher or first-launch check. No installer or public release is published yet. The evaluator does not install tools, change permissions or contexts, or guarantee version compatibility and successful cluster provisioning.
+The future curl-based installation script and native installers must consume this same preflight rather than implementing independent dependency detection. A drag-and-drop DMG does not run installation hooks; it requires an explicit preflight launcher or first-launch check. Platform installers are not implemented yet; tagged release distribution is described below. The evaluator does not install tools, change permissions or contexts, or guarantee version compatibility and successful cluster provisioning.
 
 ### Native build artifacts
 
@@ -94,7 +94,70 @@ The `Desktop packages` GitHub Actions workflow creates native test packages usin
 | macOS Intel | `tilt-desktop-macos-amd64` | `TiltDesktop-macos-amd64.zip` containing `TiltDesktop.app` |
 | Windows x86-64 | `tilt-desktop-windows-amd64` | `TiltDesktop-windows-amd64.zip` containing the native `.exe` |
 
-Open the `Desktop packages` run under GitHub Actions to access its retained artifacts. Each artifact includes the matching headless dependency evaluator alongside the desktop package. These are **unsigned, unnotarized CI builds**, not public installers or a supported end-user release. macOS Gatekeeper and Windows SmartScreen may restrict their use. There is no automatic release publishing.
+Open the `Desktop packages` run under GitHub Actions to access its retained artifacts. Each artifact includes the matching headless dependency evaluator alongside the desktop package. These are **unsigned, unnotarized CI builds**, not public installers or a supported end-user release. macOS Gatekeeper and Windows SmartScreen may restrict their use. Tagged builds also publish verified release assets as described below.
+
+### Tagged releases
+
+Pushing a version tag from the history of `main` (for example `v0.1.0-rc.1`) runs the same native package matrix used for pull requests. The release asset verification job collects the four platform archives and four platform-specific headless checkers, generates `SHA256SUMS`, and verifies all eight checksums. Only a tag push can publish a GitHub Release, and only after every native build and asset check succeeds. Tags use the `vMAJOR.MINOR.PATCH[-PRERELEASE]` form; prerelease tags are published as prereleases, not as the latest stable version.
+
+Download the package, matching checker and checksum manifest from [GitHub Releases](https://github.com/jmeiracorbal/tilt-desktop/releases). The archive filenames are the same as those in the native build table. The checker filenames are:
+
+| Target | Checker |
+| --- | --- |
+| Linux x86-64 | `tilt-desktop-check-linux-amd64` |
+| macOS Apple Silicon | `tilt-desktop-check-macos-arm64` |
+| macOS Intel | `tilt-desktop-check-macos-amd64` |
+| Windows x86-64 | `tilt-desktop-check-windows-amd64.exe` |
+
+On macOS, for example, download the Apple Silicon archive, checker and manifest into the same directory and verify both files:
+
+```sh
+grep -E '  (TiltDesktop-macos-arm64\.zip|tilt-desktop-check-macos-arm64) Packaging the desktop does not bundle or install these tools. CI verifies the native build on each target; runtime integration with Docker/k3d/Tilt remains exercised on Linux only. Native GUI behavior on macOS and Windows has not been validated end-to-end.
+
+## Application manager
+
+The Go API can start a project from its existing folder without requiring manual k3d setup:
+
+```go
+manager, err := application.NewLocalManager()
+if err != nil { return err }
+defer manager.Close()
+
+project, err := manager.Register("/absolute/path/to/project")
+if err != nil { return err }
+
+if err := manager.Start(ctx, project.ID); err != nil { return err }
+state, err := manager.Status(project.ID)
+if err != nil { return err }
+_ = state
+
+// Stops Tilt and the dedicated cluster without removing its data.
+return manager.Stop(ctx, project.ID)
+```
+
+Deletion is separate and requires confirmation: `manager.Delete(ctx, project.ID, true)`. Dedicated clusters remain the default. Use `manager.RegisterShared(directory, "td-shared-development")` to explicitly assign a project to a managed shared cluster. The name must begin with `td-shared-` and be a valid k3d name. Existing assignments cannot be changed by registration. `manager.ListSharedClusters()` reports catalog membership; `manager.StopSharedCluster(ctx, name)` and `manager.DeleteSharedCluster(ctx, name, true)` are separate cluster operations. The shared cluster remains registered even after its last project is removed until explicitly deleted. `Reconcile` / `ReconcileAll` must be used to check unresolved sessions before attempting to restart them. A running orphan is never silently adopted.
+
+## Development
+
+```sh
+go test -count=1 ./...
+go vet ./...
+
+# Requires a working Docker runtime, k3d, Tilt, and kubectl:
+go test -v -tags=integration -count=1 -timeout=15m ./internal/integration
+```
+
+The application core uses the Go standard library and golang.org/x/sys for platform-specific locking, permissions and process checks. Fyne 2.8.2 is a dependency of the UI only.
+
+The architecture and verified implementation changes are recorded in Google Drive at `Proyectos/Opensource/Tilt Desktop`.
+ SHA256SUMS | shasum -a 256 -c
+chmod +x tilt-desktop-check-macos-arm64
+./tilt-desktop-check-macos-arm64
+```
+
+With a complete set of assets, use `sha256sum --check SHA256SUMS` on Linux. On Windows, compare the SHA-256 digest returned by `Get-FileHash -Algorithm SHA256` for the downloaded file with its entry in the manifest.
+
+The published packages are still unsigned, unnotarized native builds, not installers. Checksums detect file corruption; they do not establish developer identity. No release is created by a pull request, a normal push to main, or a manual dispatch. The tag must already exist; publication does not create tags or overwrite a previous release. The native matrix runs the Go tests on all four targets; the separate CI and integration workflows continue validating pull requests and main.
 
 Creating and running application environments still requires Docker, k3d and Tilt installed separately. Packaging the desktop does not bundle or install these tools. CI verifies the native build on each target; runtime integration with Docker/k3d/Tilt remains exercised on Linux only. Native GUI behavior on macOS and Windows has not been validated end-to-end.
 
